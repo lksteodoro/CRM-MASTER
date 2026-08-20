@@ -1,10 +1,52 @@
 <!doctype html>
-<html lang="en">
+<html lang="pt-BR">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="%VITE_SUPABASE_URL%" crossorigin />
     <title>Leads Hub</title>
+    <style>
+      html.fast-redirect,
+      html.fast-redirect body { background: #0b0d12; }
+      html.fast-redirect #root { visibility: hidden; }
+    </style>
+    <script>
+      (() => {
+        const match = location.pathname.match(/^\/r\/([a-z0-9][a-z0-9-]{2,79})\/?$/i);
+        if (!match) return;
+        document.documentElement.classList.add('fast-redirect');
+        const supabaseUrl = '%VITE_SUPABASE_URL%'.replace(/\/$/, '');
+        const anonKey = '%VITE_SUPABASE_ANON_KEY%';
+        window.__fastRedirectPromise = fetch(`${supabaseUrl}/rest/v1/rpc/resolve_redirect_link`, {
+          method: 'POST',
+          headers: {
+            apikey: anonKey,
+            Authorization: `Bearer ${anonKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ p_slug: match[1].toLowerCase() }),
+          cache: 'no-store',
+        })
+          .then((response) => {
+            if (!response.ok) throw new Error('redirect_lookup_failed');
+            return response.json();
+          })
+          .then((rows) => {
+            const resolved = rows[0] || null;
+            if (resolved && resolved.delay_seconds === 0) {
+              location.replace(resolved.target_url);
+            } else {
+              document.documentElement.classList.remove('fast-redirect');
+            }
+            return resolved;
+          })
+          .catch((error) => {
+            document.documentElement.classList.remove('fast-redirect');
+            throw error;
+          });
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

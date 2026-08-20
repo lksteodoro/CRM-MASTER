@@ -1,16 +1,23 @@
 import { useEffect, useState } from 'react';
 import { useProject } from '../../state/ProjectContext';
 import { useFilters } from '../../state/FiltersContext';
-import { listAdInsights, listMetaEntities } from '../../services/metaAds.service';
-import { listLeadEvents, listSales } from '../../services/crmLeads.service';
-import { buildDailySeries, buildAdTimeline, computePeriodData } from '../../lib/metricsTrend';
-import type { MetaAdInsightDailyRow, LeadEventRow, SaleRow, MetaEntityRow } from '../../integrations/supabase/database.types';
+import {
+  getMetaAdsManagerSummary,
+  listAdInsights,
+  listMetaEntities,
+  type MetaAdsManagerMetrics,
+} from '../../services/metaAds.service';
+import { listLeadEvents, listLeadEventsByIds, listSales } from '../../services/crmLeads.service';
+import { buildDailySeries, computePeriodData } from '../../lib/metricsTrend';
+import type {
+  LeadEventRow,
+  MetaAdInsightDailyRow,
+  MetaEntityRow,
+  SaleRow,
+} from '../../integrations/supabase/database.types';
 import { LoadingView } from '../ui/StateView';
-import { MetricsSummaryTab } from './MetricsSummaryTab';
-import { MetricsTrendTab } from './MetricsTrendTab';
-import { MetricsTimelineTab } from './MetricsTimelineTab';
+import { TrafficDashboard } from './TrafficDashboard';
 
-/** Mesma duração do período atual, terminando no dia imediatamente anterior. */
 function previousPeriod(since: string, until: string) {
   const start = new Date(`${since}T00:00:00`);
   const end = new Date(`${until}T00:00:00`);
@@ -23,94 +30,104 @@ function previousPeriod(since: string, until: string) {
 interface PeriodRaw {
   adInsights: MetaAdInsightDailyRow[];
   leadEvents: LeadEventRow[];
+  attributionLeadEvents: LeadEventRow[];
   sales: SaleRow[];
+  metaSummary: MetaAdsManagerMetrics | null;
 }
+
+interface DashboardCacheEntry {
+  current: PeriodRaw;
+  previous: PeriodRaw;
+  entities: MetaEntityRow[];
+  loadedAt: number;
+  refreshKey: number;
+}
+
+const dashboardCache = new Map<string, DashboardCacheEntry>();
+const leadHistoryCache = new Map<string, { rows: LeadEventRow[]; loadedAt: number }>();
+const DASHBOARD_CACHE_MS = 2 * 60 * 1000;
+const LEAD_HISTORY_CACHE_MS = 10 * 60 * 1000;
 
 async function loadRaw(projectId: string, since: string, until: string): Promise<PeriodRaw> {
   const range = { since, until };
-  const [adInsights, leadEvents, sales] = await Promise.all([
+  const [adInsights, periodLeadEvents, sales, metaSummary] = await Promise.all([
     listAdInsights(projectId, range).catch(() => []),
     listLeadEvents(projectId, range).catch(() => []),
     listSales(projectId, range).catch(() => []),
+    getMetaAdsManagerSummary(projectId, range).catch(() => null),
   ]);
-  return { adInsights, leadEvents, sales };
+  const periodIds = new Set(periodLeadEvents.map((event) => event.id));
+  const linkedIds = sales.map((sale) => sale.lead_event_id).filter((id): id is string => Boolean(id) && !periodIds.has(id!));
+  const linkedLeadEvents = await listLeadEventsByIds(linkedIds).catch(() => []);
+  return { adInsights, leadEvents: periodLeadEvents, attributionLeadEvents: [...periodLeadEvents, ...linkedLeadEvents], sales, metaSummary };
 }
 
-type TabKey = 'resumo' | 'tendencia' | 'timeline';
-
-const tabs: { key: TabKey; label: string }[] = [
-  { key: 'resumo', label: 'Resumo' },
-  { key: 'tendencia', label: 'Tendência' },
-  { key: 'timeline', label: 'Timeline' },
-];
-
-/**
- * Redesenho da seção "Métricas Completas" do Dashboard em 3 visões: Resumo
- * (cards), Tendência (linhas) e Timeline (gantt). Busca os dados brutos uma
- * vez aqui (período atual + anterior) e distribui pras 3 abas — evita cada
- * uma refazer a mesma consulta.
- */
-export function MetricsTabs() {
+export function MetricsTabs({ refreshKey = 0 }: { refreshKey?: number }) {
   const { project } = useProject();
   const { dateRange } = useFilters();
-  const [tab, setTab] = useState<TabKey>('resumo');
   const [current, setCurrent] = useState<PeriodRaw | null>(null);
   const [previous, setPrevious] = useState<PeriodRaw | null>(null);
   const [entities, setEntities] = useState<MetaEntityRow[]>([]);
 
   useEffect(() => {
     let active = true;
-    setCurrent(null);
-    setPrevious(null);
+    const cacheKey = `${project.id}:${dateRange.start}:${dateRange.end}`;
+    const cached = dashboardCache.get(cacheKey);
+    if (cached) {
+      setCurrent(cached.current);
+      setPrevious(cached.previous);
+      setEntities(cached.entities);
+      if (Date.now() - cached.loadedAt < DASHBOARD_CACHE_MS && cached.refreshKey === refreshKey) {
+        return () => { active = false; };
+      }
+    } else {
+      setCurrent(null);
+      setPrevious(null);
+    }
     (async () => {
       const prev = previousPeriod(dateRange.start, dateRange.end);
       const [curData, prevData, entityRows] = await Promise.all([
         loadRaw(project.id, dateRange.start, dateRange.end),
         loadRaw(project.id, prev.since, prev.until),
-        listMetaEntities(project.id, 'ad').catch(() => []),
+        listMetaEntities(project.id).catch(() => []),
       ]);
+      const periods = [curData, prevData];
+      if (periods.some((period) => period.sales.some((sale) => !sale.lead_event_id))) {
+        const cachedHistory = leadHistoryCache.get(project.id);
+        const history = cachedHistory && Date.now() - cachedHistory.loadedAt < LEAD_HISTORY_CACHE_MS
+          ? cachedHistory.rows
+          : await listLeadEvents(project.id).catch(() => []);
+        if (!cachedHistory || history !== cachedHistory.rows) leadHistoryCache.set(project.id, { rows: history, loadedAt: Date.now() });
+        for (const period of periods) {
+          const contactIds = new Set(period.sales.map((sale) => sale.contact_id));
+          const knownIds = new Set(period.attributionLeadEvents.map((event) => event.id));
+          period.attributionLeadEvents.push(...history.filter((event) => contactIds.has(event.contact_id) && !knownIds.has(event.id)));
+        }
+      }
       if (!active) return;
+      dashboardCache.set(cacheKey, { current: curData, previous: prevData, entities: entityRows, loadedAt: Date.now(), refreshKey });
       setCurrent(curData);
       setPrevious(prevData);
       setEntities(entityRows);
     })();
-    return () => {
-      active = false;
-    };
-  }, [project.id, dateRange.start, dateRange.end]);
+    return () => { active = false; };
+  }, [project.id, dateRange.start, dateRange.end, refreshKey]);
 
-  if (!current || !previous) return <LoadingView label="Carregando métricas..." />;
-
-  const currentData = computePeriodData(current.adInsights, current.leadEvents, current.sales);
-  const previousData = computePeriodData(previous.adInsights, previous.leadEvents, previous.sales);
-  const currentSeries = buildDailySeries(current.adInsights, current.leadEvents, current.sales);
-  const previousSeries = buildDailySeries(previous.adInsights, previous.leadEvents, previous.sales);
-  const adTimeline = buildAdTimeline(current.adInsights, entities);
+  if (!current || !previous) return <LoadingView label="Carregando dashboard real..." />;
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex gap-1 border-b border-[var(--color-border)]">
-        {tabs.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            className={
-              'border-b-2 px-4 py-2 text-sm font-medium transition-colors ' +
-              (tab === t.key
-                ? 'border-[var(--color-brand)] text-[var(--color-brand)]'
-                : 'border-transparent text-[var(--color-text-muted)] hover:text-[var(--color-text)]')
-            }
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {tab === 'resumo' && (
-        <MetricsSummaryTab current={currentData} previous={previousData} currentSeries={currentSeries} />
-      )}
-      {tab === 'tendencia' && <MetricsTrendTab currentSeries={currentSeries} previousSeries={previousSeries} />}
-      {tab === 'timeline' && <MetricsTimelineTab ads={adTimeline} />}
-    </div>
+    <TrafficDashboard
+      current={computePeriodData(current.adInsights, current.leadEvents, current.sales, current.metaSummary)}
+      previous={computePeriodData(previous.adInsights, previous.leadEvents, previous.sales, previous.metaSummary)}
+      currentSeries={buildDailySeries(current.adInsights, current.leadEvents, current.sales)}
+      previousSeries={buildDailySeries(previous.adInsights, previous.leadEvents, previous.sales)}
+      previousLeadEvents={previous.leadEvents}
+      adInsights={current.adInsights}
+      leadEvents={current.leadEvents}
+      attributionLeadEvents={current.attributionLeadEvents}
+      sales={current.sales}
+      metaSummary={current.metaSummary}
+      entities={entities}
+    />
   );
 }

@@ -54,7 +54,7 @@ export function ProjectLayout() {
     <ProjectProvider value={{ project, goals, permissions, reloadGoals }}>
       <div className="flex h-screen bg-[var(--color-bg)]">
         <Sidebar />
-        <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-contain">
           <Topbar />
           <Outlet />
         </div>

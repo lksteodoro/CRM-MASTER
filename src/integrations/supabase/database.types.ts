@@ -152,6 +152,42 @@ export type Database = {
         };
         Relationships: [];
       };
+      client_disparo_profiles: {
+        Row: {
+          client_id: string;
+          organization_id: string;
+          profile_name: string | null;
+          default_ddd: string | null;
+          profile_photo_path: string | null;
+          profile_cover_path: string | null;
+          updated_by: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          client_id: string;
+          organization_id?: string;
+          profile_name?: string | null;
+          default_ddd?: string | null;
+          profile_photo_path?: string | null;
+          profile_cover_path?: string | null;
+          updated_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          client_id?: string;
+          organization_id?: string;
+          profile_name?: string | null;
+          default_ddd?: string | null;
+          profile_photo_path?: string | null;
+          profile_cover_path?: string | null;
+          updated_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
       projects: {
         Row: {
           id: string;
@@ -473,6 +509,7 @@ export type Database = {
           raw_payload: Json | null;
           created_at: string;
           updated_at: string;
+          custom_fields: Json;
         };
         Insert: {
           id?: string;
@@ -494,6 +531,7 @@ export type Database = {
           raw_payload?: Json | null;
           created_at?: string;
           updated_at?: string;
+          custom_fields?: Json;
         };
         Update: {
           id?: string;
@@ -515,7 +553,14 @@ export type Database = {
           raw_payload?: Json | null;
           created_at?: string;
           updated_at?: string;
+          custom_fields?: Json;
         };
+        Relationships: [];
+      };
+      project_custom_fields: {
+        Row: { id: string; project_id: string; entity_type: string; field_key: string; label: string; data_type: string; active: boolean; created_at: string };
+        Insert: { id?: string; project_id: string; entity_type: string; field_key: string; label: string; data_type?: string; active?: boolean; created_at?: string };
+        Update: { id?: string; project_id?: string; entity_type?: string; field_key?: string; label?: string; data_type?: string; active?: boolean; created_at?: string };
         Relationships: [];
       };
       sales: {
@@ -533,6 +578,7 @@ export type Database = {
           raw_payload: Json | null;
           created_at: string;
           updated_at: string;
+          custom_fields: Json;
         };
         Insert: {
           id?: string;
@@ -548,6 +594,7 @@ export type Database = {
           raw_payload?: Json | null;
           created_at?: string;
           updated_at?: string;
+          custom_fields?: Json;
         };
         Update: {
           id?: string;
@@ -563,6 +610,7 @@ export type Database = {
           raw_payload?: Json | null;
           created_at?: string;
           updated_at?: string;
+          custom_fields?: Json;
         };
         Relationships: [];
       };
@@ -835,8 +883,24 @@ export type Database = {
           impressions: number;
           clicks: number;
           link_clicks: number;
+          outbound_clicks: number;
           reach: number;
+          frequency: number;
+          ctr: number;
+          cpc: number;
+          cpm: number;
           leads: number;
+          landing_page_views: number;
+          post_engagement: number;
+          video_views: number;
+          thruplays: number;
+          purchases: number;
+          purchase_value: number;
+          messaging_conversations_started: number;
+          purchase_roas: number;
+          actions: Json;
+          action_values: Json;
+          cost_per_action_type: Json;
           created_at: string;
           updated_at: string;
         };
@@ -855,8 +919,24 @@ export type Database = {
           impressions?: number;
           clicks?: number;
           link_clicks?: number;
+          outbound_clicks?: number;
           reach?: number;
+          frequency?: number;
+          ctr?: number;
+          cpc?: number;
+          cpm?: number;
           leads?: number;
+          landing_page_views?: number;
+          post_engagement?: number;
+          video_views?: number;
+          thruplays?: number;
+          purchases?: number;
+          purchase_value?: number;
+          messaging_conversations_started?: number;
+          purchase_roas?: number;
+          actions?: Json;
+          action_values?: Json;
+          cost_per_action_type?: Json;
           created_at?: string;
           updated_at?: string;
         };
@@ -875,8 +955,24 @@ export type Database = {
           impressions?: number;
           clicks?: number;
           link_clicks?: number;
+          outbound_clicks?: number;
           reach?: number;
+          frequency?: number;
+          ctr?: number;
+          cpc?: number;
+          cpm?: number;
           leads?: number;
+          landing_page_views?: number;
+          post_engagement?: number;
+          video_views?: number;
+          thruplays?: number;
+          purchases?: number;
+          purchase_value?: number;
+          messaging_conversations_started?: number;
+          purchase_roas?: number;
+          actions?: Json;
+          action_values?: Json;
+          cost_per_action_type?: Json;
           created_at?: string;
           updated_at?: string;
         };
@@ -891,8 +987,24 @@ export type Database = {
           impressions: number;
           clicks: number;
           link_clicks: number;
+          outbound_clicks: number;
           reach: number;
+          frequency: number;
+          ctr: number;
+          cpc: number;
+          cpm: number;
           leads: number;
+          landing_page_views: number;
+          post_engagement: number;
+          video_views: number;
+          thruplays: number;
+          purchases: number;
+          purchase_value: number;
+          messaging_conversations_started: number;
+          purchase_roas: number;
+          actions: Json;
+          action_values: Json;
+          cost_per_action_type: Json;
           created_at: string;
           updated_at: string;
         };
@@ -904,8 +1016,24 @@ export type Database = {
           impressions?: number;
           clicks?: number;
           link_clicks?: number;
+          outbound_clicks?: number;
           reach?: number;
+          frequency?: number;
+          ctr?: number;
+          cpc?: number;
+          cpm?: number;
           leads?: number;
+          landing_page_views?: number;
+          post_engagement?: number;
+          video_views?: number;
+          thruplays?: number;
+          purchases?: number;
+          purchase_value?: number;
+          messaging_conversations_started?: number;
+          purchase_roas?: number;
+          actions?: Json;
+          action_values?: Json;
+          cost_per_action_type?: Json;
           created_at?: string;
           updated_at?: string;
         };
@@ -917,8 +1045,24 @@ export type Database = {
           impressions?: number;
           clicks?: number;
           link_clicks?: number;
+          outbound_clicks?: number;
           reach?: number;
+          frequency?: number;
+          ctr?: number;
+          cpc?: number;
+          cpm?: number;
           leads?: number;
+          landing_page_views?: number;
+          post_engagement?: number;
+          video_views?: number;
+          thruplays?: number;
+          purchases?: number;
+          purchase_value?: number;
+          messaging_conversations_started?: number;
+          purchase_roas?: number;
+          actions?: Json;
+          action_values?: Json;
+          cost_per_action_type?: Json;
           created_at?: string;
           updated_at?: string;
         };
@@ -976,9 +1120,462 @@ export type Database = {
         };
         Relationships: [];
       };
+
+      disparo_tags: {
+        Row: {
+          id: string;
+          organization_id: string;
+          name: string;
+          color: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          organization_id?: string;
+          name: string;
+          color?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          name?: string;
+          color?: string;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+
+      disparo_tasks: {
+        Row: {
+          id: string;
+          organization_id: string;
+          created_by: string;
+          client_id: string | null;
+          title: string;
+          scheduled_date: string | null;
+          scheduled_time: string | null;
+          status:
+            | 'pedido'
+            | 'pagamento'
+            | 'numero_perfil'
+            | 'template_midia'
+            | 'lista'
+            | 'teste'
+            | 'disparo'
+            | 'finalizado';
+          position: number;
+          contact_list_ref: string | null;
+          list_tag: string | null;
+          full_link: string | null;
+          short_link: string | null;
+          instagram: string | null;
+          copy_text: string | null;
+          copy_approved: boolean;
+          final_report: string | null;
+          profile_photo_url: string | null;
+          image_url: string | null;
+          video_url: string | null;
+          list_file_url: string | null;
+          list_file_name: string | null;
+          request_source: 'agency' | 'client_portal';
+          client_submitted_at: string | null;
+          client_notes: string | null;
+          profile_name_snapshot: string | null;
+          profile_ddd_snapshot: string | null;
+          profile_photo_path: string | null;
+          profile_cover_path: string | null;
+          source_list_path: string | null;
+          source_list_file_name: string | null;
+          source_list_mime_type: string | null;
+          list_original_count: number;
+          list_valid_count: number;
+          list_invalid_count: number;
+          list_duplicate_count: number;
+          client_portal_status: 'submitted' | 'under_review' | 'action_required' | 'approved';
+          client_feedback_comment: string | null;
+          client_feedback_at: string | null;
+          client_feedback_by: string | null;
+          contracted_quantity: number;
+          sent_quantity: number;
+          client_revenue: number;
+          supplier_unit_cost: number;
+          checklist: Record<string, boolean>;
+          finished_at: string | null;
+          archived_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          organization_id?: string;
+          created_by?: string;
+          client_id?: string | null;
+          title: string;
+          scheduled_date?: string | null;
+          scheduled_time?: string | null;
+          status?:
+            | 'pedido'
+            | 'pagamento'
+            | 'numero_perfil'
+            | 'template_midia'
+            | 'lista'
+            | 'teste'
+            | 'disparo'
+            | 'finalizado';
+          position?: number;
+          contact_list_ref?: string | null;
+          list_tag?: string | null;
+          full_link?: string | null;
+          short_link?: string | null;
+          instagram?: string | null;
+          copy_text?: string | null;
+          copy_approved?: boolean;
+          final_report?: string | null;
+          profile_photo_url?: string | null;
+          image_url?: string | null;
+          video_url?: string | null;
+          list_file_url?: string | null;
+          list_file_name?: string | null;
+          request_source?: 'agency' | 'client_portal';
+          client_submitted_at?: string | null;
+          client_notes?: string | null;
+          profile_name_snapshot?: string | null;
+          profile_ddd_snapshot?: string | null;
+          profile_photo_path?: string | null;
+          profile_cover_path?: string | null;
+          source_list_path?: string | null;
+          source_list_file_name?: string | null;
+          source_list_mime_type?: string | null;
+          list_original_count?: number;
+          list_valid_count?: number;
+          list_invalid_count?: number;
+          list_duplicate_count?: number;
+          client_portal_status?: 'submitted' | 'under_review' | 'action_required' | 'approved';
+          client_feedback_comment?: string | null;
+          client_feedback_at?: string | null;
+          client_feedback_by?: string | null;
+          contracted_quantity?: number;
+          sent_quantity?: number;
+          client_revenue?: number;
+          supplier_unit_cost?: number;
+          checklist?: Record<string, boolean>;
+          finished_at?: string | null;
+          archived_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          created_by?: string;
+          client_id?: string | null;
+          title?: string;
+          scheduled_date?: string | null;
+          scheduled_time?: string | null;
+          status?:
+            | 'pedido'
+            | 'pagamento'
+            | 'numero_perfil'
+            | 'template_midia'
+            | 'lista'
+            | 'teste'
+            | 'disparo'
+            | 'finalizado';
+          position?: number;
+          contact_list_ref?: string | null;
+          list_tag?: string | null;
+          full_link?: string | null;
+          short_link?: string | null;
+          instagram?: string | null;
+          copy_text?: string | null;
+          copy_approved?: boolean;
+          final_report?: string | null;
+          profile_photo_url?: string | null;
+          image_url?: string | null;
+          video_url?: string | null;
+          list_file_url?: string | null;
+          list_file_name?: string | null;
+          request_source?: 'agency' | 'client_portal';
+          client_submitted_at?: string | null;
+          client_notes?: string | null;
+          profile_name_snapshot?: string | null;
+          profile_ddd_snapshot?: string | null;
+          profile_photo_path?: string | null;
+          profile_cover_path?: string | null;
+          source_list_path?: string | null;
+          source_list_file_name?: string | null;
+          source_list_mime_type?: string | null;
+          list_original_count?: number;
+          list_valid_count?: number;
+          list_invalid_count?: number;
+          list_duplicate_count?: number;
+          client_portal_status?: 'submitted' | 'under_review' | 'action_required' | 'approved';
+          client_feedback_comment?: string | null;
+          client_feedback_at?: string | null;
+          client_feedback_by?: string | null;
+          contracted_quantity?: number;
+          sent_quantity?: number;
+          client_revenue?: number;
+          supplier_unit_cost?: number;
+          checklist?: Record<string, boolean>;
+          finished_at?: string | null;
+          archived_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+
+      disparo_task_numbers: {
+        Row: {
+          id: string;
+          disparo_task_id: string;
+          waba_label: string | null;
+          number: string;
+          name: string | null;
+          is_test: boolean;
+          position: number;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          disparo_task_id: string;
+          waba_label?: string | null;
+          number: string;
+          name?: string | null;
+          is_test?: boolean;
+          position?: number;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          disparo_task_id?: string;
+          waba_label?: string | null;
+          number?: string;
+          name?: string | null;
+          is_test?: boolean;
+          position?: number;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+
+      disparo_task_tags: {
+        Row: {
+          disparo_task_id: string;
+          tag_id: string;
+        };
+        Insert: {
+          disparo_task_id: string;
+          tag_id: string;
+        };
+        Update: {
+          disparo_task_id?: string;
+          tag_id?: string;
+        };
+        Relationships: [];
+      };
+
+      disparo_financial_settings: {
+        Row: {
+          organization_id: string;
+          supplier_unit_cost: number;
+          created_by: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          organization_id?: string;
+          supplier_unit_cost?: number;
+          created_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          organization_id?: string;
+          supplier_unit_cost?: number;
+          created_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+
+      infobip_deposits: {
+        Row: {
+          id: string;
+          organization_id: string;
+          created_by: string | null;
+          amount: number;
+          deposited_at: string;
+          status: 'pending' | 'confirmed' | 'cancelled';
+          reference: string | null;
+          notes: string | null;
+          receipt_path: string | null;
+          receipt_file_name: string | null;
+          receipt_content_type: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          organization_id?: string;
+          created_by?: string | null;
+          amount: number;
+          deposited_at?: string;
+          status?: 'pending' | 'confirmed' | 'cancelled';
+          reference?: string | null;
+          notes?: string | null;
+          receipt_path?: string | null;
+          receipt_file_name?: string | null;
+          receipt_content_type?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          created_by?: string | null;
+          amount?: number;
+          deposited_at?: string;
+          status?: 'pending' | 'confirmed' | 'cancelled';
+          reference?: string | null;
+          notes?: string | null;
+          receipt_path?: string | null;
+          receipt_file_name?: string | null;
+          receipt_content_type?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+
+      redirect_links: {
+        Row: {
+          id: string;
+          organization_id: string;
+          client_id: string;
+          name: string;
+          slug: string;
+          strategy: 'single' | 'round_robin';
+          delay_seconds: number;
+          active: boolean;
+          hit_count: number;
+          last_accessed_at: string | null;
+          created_by: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          organization_id?: string;
+          client_id: string;
+          name: string;
+          slug: string;
+          strategy?: 'single' | 'round_robin';
+          delay_seconds?: number;
+          active?: boolean;
+          hit_count?: number;
+          last_accessed_at?: string | null;
+          created_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          client_id?: string;
+          name?: string;
+          slug?: string;
+          strategy?: 'single' | 'round_robin';
+          delay_seconds?: number;
+          active?: boolean;
+          hit_count?: number;
+          last_accessed_at?: string | null;
+          created_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+
+      redirect_destinations: {
+        Row: {
+          id: string;
+          redirect_link_id: string;
+          label: string | null;
+          target_url: string;
+          position: number;
+          hit_count: number;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          redirect_link_id: string;
+          label?: string | null;
+          target_url: string;
+          position?: number;
+          hit_count?: number;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          redirect_link_id?: string;
+          label?: string | null;
+          target_url?: string;
+          position?: number;
+          hit_count?: number;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      infobip_senders: {
+        Row: { id: string; organization_id: string; client_id: string | null; label: string; sender: string; waba_id: string | null; waba_label: string | null; active: boolean; created_at: string; updated_at: string };
+        Insert: { id?: string; organization_id?: string; client_id?: string | null; label: string; sender: string; waba_id?: string | null; waba_label?: string | null; active?: boolean; created_at?: string; updated_at?: string };
+        Update: { id?: string; organization_id?: string; client_id?: string | null; label?: string; sender?: string; waba_id?: string | null; waba_label?: string | null; active?: boolean; created_at?: string; updated_at?: string };
+        Relationships: [];
+      };
+      infobip_template_models: {
+        Row: { id: string; organization_id: string; client_id: string | null; display_name: string; name_pattern: string; language: string; category: 'MARKETING' | 'UTILITY' | 'AUTHENTICATION'; body_text: string; variable_examples: string[]; header_type: 'NONE' | 'IMAGE' | 'VIDEO'; header_media_url: string | null; footer_text: string | null; button_text: string | null; button_url: string | null; active: boolean; created_by: string | null; created_at: string; updated_at: string };
+        Insert: { id?: string; organization_id?: string; client_id?: string | null; display_name: string; name_pattern?: string; language?: string; category?: 'MARKETING' | 'UTILITY' | 'AUTHENTICATION'; body_text: string; variable_examples?: string[]; header_type?: 'NONE' | 'IMAGE' | 'VIDEO'; header_media_url?: string | null; footer_text?: string | null; button_text?: string | null; button_url?: string | null; active?: boolean; created_by?: string | null; created_at?: string; updated_at?: string };
+        Update: { id?: string; organization_id?: string; client_id?: string | null; display_name?: string; name_pattern?: string; language?: string; category?: 'MARKETING' | 'UTILITY' | 'AUTHENTICATION'; body_text?: string; variable_examples?: string[]; header_type?: 'NONE' | 'IMAGE' | 'VIDEO'; header_media_url?: string | null; footer_text?: string | null; button_text?: string | null; button_url?: string | null; active?: boolean; created_by?: string | null; created_at?: string; updated_at?: string };
+        Relationships: [];
+      };
+      infobip_template_submissions: {
+        Row: { id: string; organization_id: string; model_id: string; sender_id: string | null; sender: string; resolved_name: string; destination_url: string | null; status: 'QUEUED' | 'SENDING' | 'SENT' | 'FAILED'; provider_template_id: string | null; provider_status: string | null; requested_category: 'MARKETING' | 'UTILITY' | 'AUTHENTICATION' | null; provider_category: 'MARKETING' | 'UTILITY' | 'AUTHENTICATION' | null; category_changed: boolean; status_checked_at: string | null; provider_response: Json | null; error_message: string | null; created_by: string | null; requested_at: string; sent_at: string | null };
+        Insert: { id?: string; organization_id?: string; model_id: string; sender_id?: string | null; sender: string; resolved_name: string; destination_url?: string | null; status?: 'QUEUED' | 'SENDING' | 'SENT' | 'FAILED'; provider_template_id?: string | null; provider_status?: string | null; requested_category?: 'MARKETING' | 'UTILITY' | 'AUTHENTICATION' | null; provider_category?: 'MARKETING' | 'UTILITY' | 'AUTHENTICATION' | null; category_changed?: boolean; status_checked_at?: string | null; provider_response?: Json | null; error_message?: string | null; created_by?: string | null; requested_at?: string; sent_at?: string | null };
+        Update: { status?: 'QUEUED' | 'SENDING' | 'SENT' | 'FAILED'; provider_template_id?: string | null; provider_status?: string | null; requested_category?: 'MARKETING' | 'UTILITY' | 'AUTHENTICATION' | null; provider_category?: 'MARKETING' | 'UTILITY' | 'AUTHENTICATION' | null; category_changed?: boolean; status_checked_at?: string | null; provider_response?: Json | null; error_message?: string | null; sent_at?: string | null };
+        Relationships: [];
+      };
+      infobip_broadcast_drafts: {
+        Row: { id: string; organization_id: string; name: string; sender: string; status: 'DRAFT' | 'READY' | 'SENDING' | 'FINISHED' | 'FAILED'; total_leads: number; created_by: string | null; created_at: string; updated_at: string };
+        Insert: { id?: string; organization_id?: string; name: string; sender: string; status?: 'DRAFT' | 'READY' | 'SENDING' | 'FINISHED' | 'FAILED'; total_leads?: number; created_by?: string | null; created_at?: string; updated_at?: string };
+        Update: { name?: string; sender?: string; status?: 'DRAFT' | 'READY' | 'SENDING' | 'FINISHED' | 'FAILED'; total_leads?: number; updated_at?: string };
+        Relationships: [];
+      };
+      infobip_broadcast_items: {
+        Row: { id: string; organization_id: string; draft_id: string; label: string; file_name: string | null; file_url: string | null; lead_count: number | null; infobip_tag_id: string | null; infobip_tag_name: string | null; infobip_tag_people_count: number | null; template_id: string; template_name: string; template_language: string; position: number; status: 'DRAFT' | 'READY' | 'SENDING' | 'FINISHED' | 'FAILED'; created_at: string };
+        Insert: { id?: string; organization_id?: string; draft_id: string; label: string; file_name?: string | null; file_url?: string | null; lead_count?: number | null; infobip_tag_id?: string | null; infobip_tag_name?: string | null; infobip_tag_people_count?: number | null; template_id: string; template_name: string; template_language: string; position?: number; status?: 'DRAFT' | 'READY' | 'SENDING' | 'FINISHED' | 'FAILED'; created_at?: string };
+        Update: { label?: string; file_name?: string | null; file_url?: string | null; lead_count?: number | null; infobip_tag_id?: string | null; infobip_tag_name?: string | null; infobip_tag_people_count?: number | null; template_id?: string; template_name?: string; template_language?: string; position?: number; status?: 'DRAFT' | 'READY' | 'SENDING' | 'FINISHED' | 'FAILED' };
+        Relationships: [];
+      };
     };
     Views: { [_ in never]: never };
-    Functions: { [_ in never]: never };
+    Functions: {
+      import_leads_batch: {
+        Args: { p_project_id: string; p_rows: Json };
+        Returns: Array<{ inserted_count: number; updated_count: number; invalid_count: number }>;
+      };
+      import_sales_batch: {
+        Args: { p_project_id: string; p_rows: Json };
+        Returns: Array<{ inserted_count: number; skipped_count: number; invalid_count: number }>;
+      };
+      resolve_redirect_link: {
+        Args: { p_slug: string };
+        Returns: Array<{ target_url: string; delay_seconds: number; link_name: string }>;
+      };
+    };
     Enums: { [_ in never]: never };
     CompositeTypes: { [_ in never]: never };
   };
@@ -991,17 +1588,21 @@ export type OrganizationRow = Tables['organizations']['Row'];
 export type ProfileRow = Tables['profiles']['Row'];
 export type ClientRow = Tables['clients']['Row'];
 export type ClientUserRow = Tables['client_users']['Row'];
+export type ClientDisparoProfileRow = Tables['client_disparo_profiles']['Row'];
 export type ProjectRow = Tables['projects']['Row'];
 export type ProjectUserRow = Tables['project_users']['Row'];
 export type ProjectGoalRow = Tables['project_goals']['Row'];
 export type ProjectSettingsRow = Tables['project_settings']['Row'];
 export type AuditLogRow = Tables['audit_logs']['Row'];
 export type MetaIntegrationRow = Tables['meta_integrations']['Row'];
+export type RedirectLinkRow = Tables['redirect_links']['Row'];
+export type RedirectDestinationRow = Tables['redirect_destinations']['Row'];
 export type MetaInsightDailyRow = Tables['meta_insights_daily']['Row'];
 export type MetaAdInsightDailyRow = Tables['meta_ad_insights_daily']['Row'];
 export type MetaEntityRow = Tables['meta_entities']['Row'];
 export type ContactRow = Tables['contacts']['Row'];
 export type LeadEventRow = Tables['lead_events']['Row'];
+export type ProjectCustomFieldRow = Tables['project_custom_fields']['Row'];
 export type SaleRow = Tables['sales']['Row'];
 export type SellerRow = Tables['sellers']['Row'];
 export type ClientRankingSettingsRow = Tables['client_ranking_settings']['Row'];
@@ -1009,3 +1610,11 @@ export type SellerPointAdjustmentRow = Tables['seller_point_adjustments']['Row']
 export type WebhookInboxRow = Tables['webhook_inbox']['Row'];
 export type ProjectIntegrationRow = Tables['project_integrations']['Row'];
 export type AgencyTaskRow = Tables['agency_tasks']['Row'];
+export type DisparoTagRow = Tables['disparo_tags']['Row'];
+export type DisparoTaskRow = Tables['disparo_tasks']['Row'];
+export type DisparoTaskNumberRow = Tables['disparo_task_numbers']['Row'];
+export type DisparoFinancialSettingsRow = Tables['disparo_financial_settings']['Row'];
+export type InfobipDepositRow = Tables['infobip_deposits']['Row'];
+export type InfobipSenderRow = Tables['infobip_senders']['Row'];
+export type InfobipTemplateModelRow = Tables['infobip_template_models']['Row'];
+export type InfobipTemplateSubmissionRow = Tables['infobip_template_submissions']['Row'];

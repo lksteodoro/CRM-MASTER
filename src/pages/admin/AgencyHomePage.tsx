@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Building2, FolderKanban, Users, ScrollText, ArrowRight, Kanban } from 'lucide-react';
+import { Building2, FolderKanban, Users, ScrollText, ArrowRight, Kanban, Send } from 'lucide-react';
 import { listClients } from '../../services/clients.service';
 import { listProjects } from '../../services/projects.service';
 import { listOrganizationUsers } from '../../services/users.service';
@@ -47,6 +47,13 @@ export function AgencyHomePage() {
       icon: Kanban,
       to: '/agency/kanban',
       description: 'Quadro de tarefas internas',
+    },
+    {
+      label: 'Disparo',
+      value: null,
+      icon: Send,
+      to: '/agency/disparo',
+      description: 'Quadro de disparos em massa',
     },
     {
       label: 'Auditoria',

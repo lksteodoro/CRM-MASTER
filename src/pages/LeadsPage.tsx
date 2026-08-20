@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Search, Info, Repeat } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Search, Info, Repeat, WandSparkles, Upload, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useAuth } from '../providers/AuthProvider';
 import { useProject } from '../state/ProjectContext';
 import { useFilters } from '../state/FiltersContext';
@@ -9,6 +10,7 @@ import {
   listContactsByIds,
   computeCrmLeadStats,
   assignSeller,
+  listProjectCustomFields,
   type CrmLeadStats,
 } from '../services/crmLeads.service';
 import { listSellers } from '../services/sellers.service';
@@ -16,7 +18,9 @@ import { formatBRL, formatNumber, formatPercent } from '../lib/format';
 import { Card } from '../components/ui/Card';
 import { LoadingView } from '../components/ui/StateView';
 import { RealLeadHistoryModal } from '../components/leads/RealLeadHistoryModal';
-import type { ContactRow, LeadEventRow, SaleRow, SellerRow } from '../integrations/supabase/database.types';
+import { SalesImportModal } from '../components/leads/SalesImportModal';
+import { LeadImportModal } from '../components/leads/LeadImportModal';
+import type { ContactRow, LeadEventRow, ProjectCustomFieldRow, SaleRow, SellerRow } from '../integrations/supabase/database.types';
 
 interface ContactGroup {
   contact: ContactRow;
@@ -27,7 +31,7 @@ interface ContactGroup {
 export function LeadsPage() {
   const { isAdmin } = useAuth();
   const { project, permissions } = useProject();
-  const { dateRange } = useFilters();
+  const { dateRange, setCustomRange } = useFilters();
   const canManage = isAdmin || permissions.can_edit_settings;
   const [tab, setTab] = useState<'leads' | 'vendas'>('leads');
   const [search, setSearch] = useState('');
@@ -38,6 +42,16 @@ export function LeadsPage() {
   const [contacts, setContacts] = useState<ContactRow[]>([]);
   const [sellers, setSellers] = useState<SellerRow[]>([]);
   const [openContact, setOpenContact] = useState<ContactGroup | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
+  const [showSalesImport, setShowSalesImport] = useState(false);
+  const [showLeadImport, setShowLeadImport] = useState(false);
+  const [customSaleFields, setCustomSaleFields] = useState<ProjectCustomFieldRow[]>([]);
+  const [salesPage, setSalesPage] = useState(1);
+  const [salesPageSize, setSalesPageSize] = useState(50);
+  const [salesScope, setSalesScope] = useState<'all' | 'period'>('all');
+  const [leadScope, setLeadScope] = useState<'all' | 'period'>('all');
+  const [leadPage, setLeadPage] = useState(1);
+  const [leadPageSize, setLeadPageSize] = useState(50);
 
   useEffect(() => {
     let active = true;
@@ -46,19 +60,19 @@ export function LeadsPage() {
     (async () => {
       const range = { since: dateRange.start, until: dateRange.end };
       const [leadEvents, saleRows] = await Promise.all([
-        listLeadEvents(project.id, range),
-        listSales(project.id, range),
+        listLeadEvents(project.id, leadScope === 'period' ? range : undefined),
+        listSales(project.id, salesScope === 'period' ? range : undefined),
       ]);
       if (!active) return;
       setEvents(leadEvents);
       setSales(saleRows);
-      const ids = Array.from(new Set(leadEvents.map((e) => e.contact_id)));
+      const ids = Array.from(new Set([...leadEvents.map((e) => e.contact_id), ...saleRows.map((s) => s.contact_id)]));
       setContacts(await listContactsByIds(ids));
     })();
     return () => {
       active = false;
     };
-  }, [project.id, dateRange.start, dateRange.end]);
+  }, [project.id, dateRange.start, dateRange.end, reloadToken, salesScope, leadScope]);
 
   useEffect(() => {
     let active = true;
@@ -69,6 +83,13 @@ export function LeadsPage() {
       active = false;
     };
   }, [project.client_id]);
+
+  useEffect(() => {
+    void listProjectCustomFields(project.id, 'sale').then(setCustomSaleFields).catch(() => setCustomSaleFields([]));
+  }, [project.id, reloadToken]);
+
+  useEffect(() => { setSalesPage(1); }, [project.id, dateRange.start, dateRange.end, salesPageSize, salesScope]);
+  useEffect(() => { setLeadPage(1); }, [project.id, dateRange.start, dateRange.end, leadPageSize, search]);
 
   async function handleAssignSeller(saleId: string, sellerId: string) {
     await assignSeller(saleId, sellerId || null);
@@ -96,8 +117,9 @@ export function LeadsPage() {
 
   const visibleGroups = useMemo(() => {
     const term = search.trim().toLowerCase();
-    if (!term) return groups;
-    return groups.filter(
+    const leadGroups = groups.filter((group) => group.events.length > 0);
+    if (!term) return leadGroups;
+    return leadGroups.filter(
       (g) =>
         (g.contact.name ?? '').toLowerCase().includes(term) ||
         (g.contact.original_email ?? '').toLowerCase().includes(term) ||
@@ -108,16 +130,50 @@ export function LeadsPage() {
   const stats: CrmLeadStats | null = events && sales ? computeCrmLeadStats(events, sales) : null;
   const ticketMedio = sales && sales.length > 0 ? sales.reduce((a, s) => a + (s.amount ?? 0), 0) / sales.length : 0;
   const repeatCount = groups.filter((g) => g.events.length > 1).length;
+  const leadPageCount = Math.max(1, Math.ceil(visibleGroups.length / leadPageSize));
+  const pagedLeadGroups = visibleGroups.slice((leadPage - 1) * leadPageSize, leadPage * leadPageSize);
+  const salesPageCount = Math.max(1, Math.ceil((sales?.length ?? 0) / salesPageSize));
+  const pagedSales = (sales ?? []).slice((salesPage - 1) * salesPageSize, salesPage * salesPageSize);
+  const eventById = useMemo(() => new Map((events ?? []).map((event) => [event.id, event])), [events]);
+  const eventsByContact = useMemo(() => {
+    const grouped = new Map<string, LeadEventRow[]>();
+    for (const event of events ?? []) {
+      const rows = grouped.get(event.contact_id) ?? [];
+      rows.push(event);
+      grouped.set(event.contact_id, rows);
+    }
+    for (const rows of grouped.values()) rows.sort((a, b) => b.occurred_at.localeCompare(a.occurred_at));
+    return grouped;
+  }, [events]);
+  const dynamicSaleColumns = useMemo(() => {
+    const columns = new Map<string, { key: string; label: string; source: 'custom' | 'raw' }>();
+    customSaleFields.forEach((field) => columns.set(`custom:${field.field_key}`, { key: field.field_key, label: field.label, source: 'custom' }));
+    for (const sale of sales ?? []) {
+      if (!sale.external_sale_id?.startsWith('csv-') || !sale.raw_payload || typeof sale.raw_payload !== 'object' || Array.isArray(sale.raw_payload)) continue;
+      for (const [key, value] of Object.entries(sale.raw_payload)) {
+        if (key === 'tipo' || value == null || value === '' || typeof value === 'object') continue;
+        if (!columns.has(`custom:${key}`)) columns.set(`raw:${key}`, { key, label: key.charAt(0).toUpperCase() + key.slice(1), source: 'raw' });
+      }
+    }
+    return Array.from(columns.values());
+  }, [customSaleFields, sales]);
 
-  if (events === null || sales === null) return <LoadingView label="Carregando leads..." />;
+  if (events === null || sales === null) return <LoadingView label={leadScope === 'all' ? 'Carregando todo o histórico de leads...' : 'Carregando leads do período...'} />;
 
   return (
     <div className="flex flex-col gap-6 p-6">
-      <div>
-        <h1 className="text-xl font-semibold text-[var(--color-text)]">Leads & Vendas — {project.name}</h1>
-        <p className="text-sm text-[var(--color-text-muted)]">
-          Dados reais recebidos pelo webhook — de quem entrou como lead até quem converteu em venda
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold text-[var(--color-text)]">Leads & Vendas — {project.name}</h1>
+          <p className="text-sm text-[var(--color-text-muted)]">
+            Dados reais recebidos pelo webhook — de quem entrou como lead até quem converteu em venda
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {canManage && <button type="button" onClick={() => setShowLeadImport(true)} className="flex items-center gap-2 rounded-lg border border-emerald-400/30 bg-emerald-400/8 px-3 py-2 text-sm font-medium text-emerald-300 hover:border-emerald-400"><Upload size={15} /> Importar leads CSV</button>}
+          {canManage && <button type="button" onClick={() => setShowSalesImport(true)} className="flex items-center gap-2 rounded-lg border border-[var(--color-brand)]/40 bg-[var(--color-brand-soft)] px-3 py-2 text-sm font-medium text-[var(--color-brand)] hover:border-[var(--color-brand)]"><Upload size={15} /> Importar vendas CSV</button>}
+          {isAdmin && <Link to="/agency/disparo/higienizador" className="flex items-center gap-2 rounded-lg border border-[var(--color-brand)]/40 bg-[var(--color-brand-soft)] px-3 py-2 text-sm font-medium text-[var(--color-brand)] hover:border-[var(--color-brand)]"><WandSparkles size={15} /> Higienizar lista de contatos</Link>}
+        </div>
       </div>
 
       {showInfo && (
@@ -147,6 +203,7 @@ export function LeadsPage() {
 
       {tab === 'leads' && (
         <>
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-panel)] p-3"><div><p className="text-xs font-medium text-[var(--color-text)]">Visualização dos leads</p><p className="mt-0.5 text-[11px] text-[var(--color-text-muted)]">{leadScope === 'all' ? 'Mostrando todos os contatos e todas as entradas deste projeto.' : `Período: ${dateRange.start} até ${dateRange.end}.`}</p></div><div className="flex rounded-lg border border-[var(--color-border)] bg-[var(--color-panel-2)] p-1"><button type="button" onClick={() => setLeadScope('all')} className={`rounded-md px-3 py-1.5 text-xs ${leadScope === 'all' ? 'bg-[var(--color-brand)] text-white' : 'text-[var(--color-text-muted)]'}`}>Todos os leads</button><button type="button" onClick={() => setLeadScope('period')} className={`rounded-md px-3 py-1.5 text-xs ${leadScope === 'period' ? 'bg-[var(--color-brand)] text-white' : 'text-[var(--color-text-muted)]'}`}>Período selecionado</button></div></div>
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-panel-2)] px-3 py-2">
               <Search size={14} className="text-[var(--color-text-faint)]" />
@@ -162,6 +219,9 @@ export function LeadsPage() {
                 <Repeat size={12} /> {repeatCount} lead{repeatCount > 1 ? 's' : ''} com mais de uma entrada
               </span>
             )}
+            <span className="rounded-full border border-[var(--color-border)] bg-[var(--color-panel)] px-3 py-1.5 text-xs text-[var(--color-text-muted)]">{formatNumber(events.length)} entradas totais</span>
+            <span className="rounded-full border border-[var(--color-border)] bg-[var(--color-panel)] px-3 py-1.5 text-xs text-[var(--color-text-muted)]">{formatNumber(visibleGroups.length)} contatos únicos</span>
+            <label className="ml-auto flex items-center gap-2 text-xs text-[var(--color-text-muted)]">Linhas por página<select value={leadPageSize} onChange={(event) => setLeadPageSize(Number(event.target.value))} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-panel)] px-2 py-1 text-[var(--color-text)]"><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option><option value={250}>250</option></select></label>
           </div>
 
           <Card className="overflow-x-auto">
@@ -176,7 +236,7 @@ export function LeadsPage() {
                 </tr>
               </thead>
               <tbody>
-                {visibleGroups.slice(0, 100).map((g) => {
+                {pagedLeadGroups.map((g) => {
                   const last = g.events[0];
                   return (
                     <tr
@@ -236,11 +296,13 @@ export function LeadsPage() {
               </tbody>
             </table>
           </Card>
+          <div className="flex items-center justify-between gap-3"><span className="text-xs text-[var(--color-text-muted)]">Mostrando {visibleGroups.length === 0 ? 0 : (leadPage - 1) * leadPageSize + 1}–{Math.min(leadPage * leadPageSize, visibleGroups.length)} de {visibleGroups.length} contatos únicos</span><div className="flex items-center gap-2"><button type="button" disabled={leadPage <= 1} onClick={() => setLeadPage((page) => page - 1)} className="rounded-lg border border-[var(--color-border)] p-2 text-[var(--color-text-muted)] disabled:opacity-30"><ChevronLeft size={14} /></button><span className="text-xs text-[var(--color-text-muted)]">Página {leadPage} de {leadPageCount}</span><button type="button" disabled={leadPage >= leadPageCount} onClick={() => setLeadPage((page) => page + 1)} className="rounded-lg border border-[var(--color-border)] p-2 text-[var(--color-text-muted)] disabled:opacity-30"><ChevronRight size={14} /></button></div></div>
         </>
       )}
 
       {tab === 'vendas' && (
         <>
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-panel)] p-3"><div><p className="text-xs font-medium text-[var(--color-text)]">Visualização das vendas</p><p className="mt-0.5 text-[11px] text-[var(--color-text-muted)]">{salesScope === 'all' ? 'Mostrando todo o histórico deste projeto.' : `Período: ${dateRange.start} até ${dateRange.end}.`}</p></div><div className="flex rounded-lg border border-[var(--color-border)] bg-[var(--color-panel-2)] p-1"><button type="button" onClick={() => setSalesScope('all')} className={`rounded-md px-3 py-1.5 text-xs ${salesScope === 'all' ? 'bg-[var(--color-brand)] text-white' : 'text-[var(--color-text-muted)]'}`}>Todas as vendas</button><button type="button" onClick={() => setSalesScope('period')} className={`rounded-md px-3 py-1.5 text-xs ${salesScope === 'period' ? 'bg-[var(--color-brand)] text-white' : 'text-[var(--color-text-muted)]'}`}>Período selecionado</button></div></div>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <SummaryTile label="Total Vendido" value={formatBRL(stats?.revenue ?? 0)} accent="var(--color-good)" />
             <SummaryTile label="Ticket Médio" value={formatBRL(ticketMedio)} />
@@ -252,23 +314,33 @@ export function LeadsPage() {
             />
           </div>
 
+          <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-[var(--color-text-muted)]"><span>Mostrando {sales.length === 0 ? 0 : (salesPage - 1) * salesPageSize + 1}–{Math.min(salesPage * salesPageSize, sales.length)} de {sales.length} vendas</span><label className="flex items-center gap-2">Linhas por página<select value={salesPageSize} onChange={(event) => setSalesPageSize(Number(event.target.value))} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-panel)] px-2 py-1 text-[var(--color-text)]"><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option><option value={250}>250</option></select></label></div>
           <Card className="overflow-x-auto">
-            <table className="w-full min-w-[700px] border-collapse text-sm">
+            <table className="w-full border-collapse text-sm" style={{ minWidth: 1080 + dynamicSaleColumns.length * 170 }}>
               <thead>
                 <tr className="border-b border-[var(--color-border)] text-left text-xs text-[var(--color-text-faint)]">
                   <th className="pb-3">Contato</th>
+                  <th className="px-3 pb-3">E-mail</th>
+                  <th className="px-3 pb-3">WhatsApp</th>
                   <th className="pb-3">Fechamento</th>
                   <th className="pb-3">Status</th>
                   <th className="pb-3">Vendedor</th>
+                  <th className="px-3 pb-3">Campanha atribuída</th>
+                  <th className="px-3 pb-3">Forma de pagamento</th>
                   <th className="pb-3 text-right">Valor</th>
+                  {dynamicSaleColumns.map((field) => <th key={`${field.source}:${field.key}`} className="px-3 pb-3">{field.label}</th>)}
                 </tr>
               </thead>
               <tbody>
-                {sales.slice(0, 100).map((sale) => {
+                {pagedSales.map((sale) => {
                   const contact = contacts.find((c) => c.id === sale.contact_id);
+                  const attributedEvent = (sale.lead_event_id ? eventById.get(sale.lead_event_id) : undefined)
+                    ?? eventsByContact.get(sale.contact_id)?.find((event) => event.occurred_at <= sale.sold_at);
                   return (
                     <tr key={sale.id} className="border-b border-[var(--color-border-soft)]">
                       <td className="py-3 text-[var(--color-text)]">{contact?.name || '—'}</td>
+                      <td className="max-w-56 truncate px-3 py-3 text-xs text-[var(--color-text-muted)]" title={contact?.original_email ?? ''}>{contact?.original_email || '—'}</td>
+                      <td className="px-3 py-3 text-xs text-[var(--color-text-muted)]">{contact?.original_phone || '—'}</td>
                       <td className="py-3 text-[var(--color-text-muted)]">
                         {new Date(sale.sold_at).toLocaleDateString('pt-BR')}
                       </td>
@@ -293,15 +365,26 @@ export function LeadsPage() {
                           </span>
                         )}
                       </td>
+                      <td className="max-w-56 px-3 py-3 text-xs">
+                        {attributedEvent?.utm_campaign || attributedEvent?.campaign_id ? (
+                          <span className="rounded-full bg-[var(--color-good-soft)] px-2 py-1 text-[var(--color-good)]" title={attributedEvent.utm_source ?? ''}>
+                            {attributedEvent.utm_campaign || attributedEvent.campaign_id}
+                          </span>
+                        ) : (
+                          <span className="text-[var(--color-text-faint)]">Sem atribuição</span>
+                        )}
+                      </td>
+                      <td className="max-w-56 truncate px-3 py-3 text-xs text-[var(--color-text-muted)]" title={sale.payment_method ?? ''}>{sale.payment_method || '—'}</td>
                       <td className="py-3 text-right font-medium text-[var(--color-good)]">
                         {sale.amount != null ? formatBRL(sale.amount) : '—'}
                       </td>
+                      {dynamicSaleColumns.map((field) => { const source = field.source === 'custom' ? sale.custom_fields : sale.raw_payload; const values = source && typeof source === 'object' && !Array.isArray(source) ? source as Record<string, unknown> : {}; return <td key={`${field.source}:${field.key}`} className="max-w-48 truncate px-3 py-3 text-xs text-[var(--color-text-muted)]" title={String(values[field.key] ?? '')}>{String(values[field.key] ?? '—')}</td>; })}
                     </tr>
                   );
                 })}
                 {sales.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="py-6 text-center text-xs text-[var(--color-text-faint)]">
+                    <td colSpan={9 + dynamicSaleColumns.length} className="py-6 text-center text-xs text-[var(--color-text-faint)]">
                       Nenhuma venda registrada no período.
                     </td>
                   </tr>
@@ -309,6 +392,7 @@ export function LeadsPage() {
               </tbody>
             </table>
           </Card>
+          <div className="flex items-center justify-end gap-2"><button type="button" disabled={salesPage <= 1} onClick={() => setSalesPage((page) => page - 1)} className="rounded-lg border border-[var(--color-border)] p-2 text-[var(--color-text-muted)] disabled:opacity-30"><ChevronLeft size={14} /></button><span className="text-xs text-[var(--color-text-muted)]">Página {salesPage} de {salesPageCount}</span><button type="button" disabled={salesPage >= salesPageCount} onClick={() => setSalesPage((page) => page + 1)} className="rounded-lg border border-[var(--color-border)] p-2 text-[var(--color-text-muted)] disabled:opacity-30"><ChevronRight size={14} /></button></div>
         </>
       )}
 
@@ -320,6 +404,8 @@ export function LeadsPage() {
           onClose={() => setOpenContact(null)}
         />
       )}
+      {showSalesImport && <SalesImportModal onClose={() => setShowSalesImport(false)} onImported={(range) => { setTab('vendas'); setCustomRange(range.start, range.end); setReloadToken((value) => value + 1); }} />}
+      {showLeadImport && <LeadImportModal onClose={() => setShowLeadImport(false)} onImported={(range) => { setTab('leads'); setLeadScope('all'); setCustomRange(range.start, range.end); setReloadToken((value) => value + 1); }} />}
     </div>
   );
 }

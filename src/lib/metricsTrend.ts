@@ -6,6 +6,7 @@ import type {
 } from '../integrations/supabase/database.types';
 import { realProjectRollup, type RealRollup } from './realRollups';
 import { computeCrmLeadStats } from '../services/crmLeads.service';
+import type { MetaAdsManagerMetrics } from '../services/metaAds.service';
 
 export interface PeriodData {
   rollup: RealRollup;
@@ -18,11 +19,28 @@ export interface PeriodData {
 export function computePeriodData(
   adInsights: MetaAdInsightDailyRow[],
   leadEvents: LeadEventRow[],
-  sales: SaleRow[]
+  sales: SaleRow[],
+  metaSummary?: MetaAdsManagerMetrics | null
 ): PeriodData {
   const stats = computeCrmLeadStats(leadEvents, sales);
+  const fallbackRollup = realProjectRollup(adInsights);
+  const rollup = metaSummary
+    ? {
+        spend: metaSummary.spend,
+        leadsCount: metaSummary.leads,
+        impressions: metaSummary.impressions,
+        clicks: metaSummary.clicks,
+        linkClicks: metaSummary.link_clicks,
+        reach: metaSummary.reach,
+        cpl: metaSummary.leads > 0 ? metaSummary.spend / metaSummary.leads : 0,
+        ctr: metaSummary.ctr,
+        cpc: metaSummary.cpc,
+        cpm: metaSummary.cpm,
+        frequency: metaSummary.frequency,
+      }
+    : fallbackRollup;
   return {
-    rollup: realProjectRollup(adInsights),
+    rollup,
     totalLeads: stats.totalLeads,
     uniqueLeads: stats.uniqueContacts,
     salesCount: stats.sales,

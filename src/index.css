@@ -44,6 +44,11 @@ body {
   box-sizing: border-box;
 }
 
+.disparo-task-modal :is(button, a, summary):focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -57,4 +62,20 @@ body {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: #383a49;
+}
+
+.kanban-scroll {
+  scrollbar-color: #383a49 transparent;
+  scrollbar-width: thin;
+}
+
+.kanban-scroll::-webkit-scrollbar {
+  height: 10px;
+}
+
+.kanban-scroll::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: #383a49;
+  background-clip: padding-box;
 }

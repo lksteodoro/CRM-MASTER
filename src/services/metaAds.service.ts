@@ -122,6 +122,52 @@ export interface MetaCampaignSummary {
   objective: string | null;
 }
 
+export interface MetaAdsManagerMetrics {
+  spend: number;
+  impressions: number;
+  clicks: number;
+  link_clicks: number;
+  outbound_clicks: number;
+  reach: number;
+  frequency: number;
+  ctr: number;
+  cpc: number;
+  cpm: number;
+  leads: number;
+  landing_page_views: number;
+  post_engagement: number;
+  video_views: number;
+  thruplays: number;
+  purchases: number;
+  purchase_value: number;
+  messaging_conversations_started: number;
+  purchase_roas: number;
+  actions: unknown[];
+  action_values: unknown[];
+  cost_per_action_type: unknown[];
+}
+
+interface MetaSummaryResult {
+  ok: boolean;
+  error?: string;
+  since?: string;
+  until?: string;
+  metrics?: MetaAdsManagerMetrics;
+}
+
+/** Resumo exato do período, sem somar alcance/frequência diários. */
+export async function getMetaAdsManagerSummary(
+  projectId: string,
+  range: { since: string; until: string }
+): Promise<MetaAdsManagerMetrics> {
+  const { data, error } = await supabase.functions.invoke<MetaSummaryResult>('meta-ads', {
+    body: { action: 'summary', projectId, since: range.since, until: range.until },
+  });
+  if (error) throw error;
+  if (!data?.ok || !data.metrics) throw new Error(data?.error ?? 'A Meta não retornou o resumo do período.');
+  return data.metrics;
+}
+
 interface ListCampaignsResult {
   ok: boolean;
   error?: string;

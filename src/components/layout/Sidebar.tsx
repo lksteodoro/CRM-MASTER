@@ -13,6 +13,7 @@ import {
   GraduationCap,
   Settings,
   Kanban,
+  Send,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useAuth } from '../../providers/AuthProvider';
@@ -24,6 +25,13 @@ interface ProjectNavItem {
   icon: typeof LayoutGrid;
   label: string;
   children?: { path: string; label: string }[];
+}
+
+interface AdminNavItem {
+  to: string;
+  icon: typeof LayoutGrid;
+  label: string;
+  children?: { to: string; label: string }[];
 }
 
 const projectNav: ProjectNavItem[] = [
@@ -40,9 +48,24 @@ const projectNav: ProjectNavItem[] = [
   },
 ];
 
-const adminNav = [
+const adminNav: AdminNavItem[] = [
   { to: '/agency', icon: Building2, label: 'Central' },
   { to: '/agency/kanban', icon: Kanban, label: 'Kanban' },
+  {
+    to: '/agency/disparo',
+    icon: Send,
+    label: 'Disparos',
+    children: [
+      { to: '/agency/disparo/dashboard', label: 'Dashboard' },
+      { to: '/agency/disparo/redirecionador', label: 'Redirecionador' },
+      { to: '/agency/disparo/templates', label: 'Templates Infobip' },
+      { to: '/agency/disparo/transmissoes', label: 'Transmissões' },
+      { to: '/agency/disparo/solicitar', label: 'Solicitar disparo' },
+      { to: '/agency/disparo/demandas', label: 'Demandas' },
+      { to: '/agency/disparo/higienizador', label: 'Higienizador de lista' },
+      { to: '/agency/disparo/relatorio', label: 'Relatório do fornecedor' },
+    ],
+  },
   { to: '/admin/clients', icon: Building2, label: 'Clientes' },
   { to: '/admin/projects', icon: FolderKanban, label: 'Projetos' },
   { to: '/admin/users', icon: Users, label: 'Usuários' },
@@ -51,7 +74,7 @@ const adminNav = [
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
   clsx(
-    'flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors',
+    'flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/60',
     isActive
       ? 'bg-[var(--color-brand-soft)] text-[var(--color-brand)]'
       : 'text-[var(--color-text-muted)] hover:bg-[var(--color-panel-2)] hover:text-[var(--color-text)]'
@@ -121,10 +144,33 @@ export function Sidebar({ showProjectContext = true }: { showProjectContext?: bo
               Agência
             </p>
             {adminNav.map((item) => (
-              <NavLink key={item.to} to={item.to} className={linkClass} end>
-                <item.icon size={17} />
-                {item.label}
-              </NavLink>
+              <div key={item.to}>
+                <NavLink
+                  to={item.to}
+                  className={linkClass}
+                  end={!item.children}
+                  aria-label={item.children ? `${item.label}, abrir Dashboard` : undefined}
+                >
+                  <item.icon size={17} />
+                  {item.label}
+                </NavLink>
+                {item.children?.map((child) => (
+                  <NavLink
+                    key={child.to}
+                    to={child.to}
+                    className={({ isActive }) =>
+                      clsx(
+                        'ml-7 flex items-center rounded-lg px-3 py-1.5 text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/60',
+                        isActive
+                          ? 'bg-[var(--color-brand-soft)]/50 text-[var(--color-brand)]'
+                          : 'text-[var(--color-text-faint)] hover:bg-[var(--color-panel-2)] hover:text-[var(--color-text)]'
+                      )
+                    }
+                  >
+                    {child.label}
+                  </NavLink>
+                ))}
+              </div>
             ))}
           </>
         )}

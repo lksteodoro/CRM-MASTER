@@ -7,6 +7,7 @@ import { LoginPage } from './pages/auth/LoginPage';
 import { ResetPasswordPage } from './pages/auth/ResetPasswordPage';
 import { ProjectsPage } from './pages/ProjectsPage';
 import { TelaoPage } from './pages/public/TelaoPage';
+import { RedirectPage } from './pages/public/RedirectPage';
 
 import { ProjectLayout } from './components/layout/ProjectLayout';
 import { AdminShell } from './components/layout/AdminShell';
@@ -24,11 +25,18 @@ import { ProjectSettingsPage } from './pages/ProjectSettingsPage';
 
 import { AgencyHomePage } from './pages/admin/AgencyHomePage';
 import { AgencyKanbanPage } from './pages/admin/AgencyKanbanPage';
+import { DisparoKanbanPage } from './pages/admin/DisparoKanbanPage';
+import { DisparoDashboardPage } from './pages/admin/DisparoDashboardPage';
+import { ListSanitizerPage } from './pages/admin/ListSanitizerPage';
+import { RedirectLinksPage } from './pages/admin/RedirectLinksPage';
+import { InfobipTemplatesPage } from './pages/admin/InfobipTemplatesPage';
+import { InfobipBroadcastsPage } from './pages/admin/InfobipBroadcastsPage';
 import { ClientsListPage } from './pages/admin/ClientsListPage';
 import { ClientDetailPage } from './pages/admin/ClientDetailPage';
 import { AdminProjectsPage } from './pages/admin/AdminProjectsPage';
 import { AdminUsersPage } from './pages/admin/AdminUsersPage';
 import { AuditLogPage } from './pages/admin/AuditLogPage';
+import { ClientDisparoPortalPage } from './pages/client/ClientDisparoPortalPage';
 
 function App() {
   return (
@@ -39,11 +47,15 @@ function App() {
           <Route path="/login" element={<LoginPage />} />
           <Route path="/redefinir-senha" element={<ResetPasswordPage />} />
           <Route path="/telao/:token" element={<TelaoPage />} />
+          <Route path="/r/:slug" element={<RedirectPage />} />
 
           {/* Autenticadas */}
           <Route element={<ProtectedRoute />}>
             <Route path="/" element={<Navigate to="/projects" replace />} />
             <Route path="/projects" element={<ProjectsPage />} />
+            {/* Portal externo do cliente: não usa AdminRoute nem o shell interno. */}
+            <Route path="/cliente/demandas" element={<ClientDisparoPortalPage />} />
+            <Route path="/cliente/:clientId/demandas" element={<ClientDisparoPortalPage />} />
 
             {/* Projeto — o id na URL é a fonte de verdade */}
             <Route path="/project/:projectId" element={<ProjectLayout />}>
@@ -65,6 +77,20 @@ function App() {
               <Route element={<AdminShell />}>
                 <Route path="/agency" element={<AgencyHomePage />} />
                 <Route path="/agency/kanban" element={<AgencyKanbanPage />} />
+                <Route
+                  path="/agency/disparo"
+                  element={<Navigate to="/agency/disparo/dashboard" replace />}
+                />
+                <Route path="/agency/disparo/dashboard" element={<DisparoDashboardPage />} />
+                <Route path="/agency/disparo/redirecionador" element={<RedirectLinksPage />} />
+                <Route path="/agency/disparo/templates" element={<InfobipTemplatesPage />} />
+                <Route path="/agency/disparo/transmissoes" element={<InfobipBroadcastsPage />} />
+                <Route path="/agency/disparo/solicitar" element={<ClientDisparoPortalPage />} />
+                <Route path="/agency/disparo/template" element={<Navigate to="/agency/disparo/templates" replace />} />
+                <Route path="/agency/disparo/tempelte" element={<Navigate to="/agency/disparo/templates" replace />} />
+                <Route path="/agency/disparo/demandas" element={<DisparoKanbanPage />} />
+                <Route path="/agency/disparo/higienizador" element={<ListSanitizerPage />} />
+                <Route path="/agency/disparo/relatorio" element={<DisparoDashboardPage reportOnly />} />
                 <Route path="/admin/clients" element={<ClientsListPage />} />
                 <Route path="/admin/clients/:clientId" element={<ClientDetailPage />} />
                 <Route path="/admin/projects" element={<AdminProjectsPage />} />

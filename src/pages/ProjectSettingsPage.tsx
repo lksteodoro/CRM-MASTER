@@ -31,6 +31,7 @@ import {
 } from '../services/crmLeads.service';
 import { listGoals, upsertGoal, currentMonthPeriod, emptyGoals, type GoalValues } from '../services/goals.service';
 import { updateProject } from '../services/projects.service';
+import { fmt } from '../lib/metrics';
 import type {
   MetaIntegrationRow,
   ProjectIntegrationRow,
@@ -83,6 +84,11 @@ export function ProjectSettingsPage() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [syncStartDate, setSyncStartDate] = useState(() => {
+    const date = new Date();
+    date.setFullYear(date.getFullYear() - 1);
+    return fmt(date);
+  });
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'error'; text: string } | null>(null);
 
   const [campaigns, setCampaigns] = useState<MetaCampaignSummary[] | null>(null);
@@ -294,13 +300,23 @@ export function ProjectSettingsPage() {
     setSyncing(true);
     setFeedback(null);
     try {
-      const until = new Date().toISOString().slice(0, 10);
-      const since = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-      const result = await syncInsights(project.id, { since, until });
-      if (!result.ok) {
-        setFeedback({ type: 'error', text: result.error ?? 'Falha ao sincronizar.' });
-        await reload();
-        return;
+      const until = fmt(new Date());
+      if (!syncStartDate || syncStartDate > until) throw new Error('Escolha uma data inicial anterior ou igual a hoje.');
+      const finalDate = new Date(`${until}T12:00:00`);
+      let cursor = new Date(`${syncStartDate}T12:00:00`);
+      let totalDays = 0;
+      while (cursor <= finalDate) {
+        const chunkStart = fmt(cursor);
+        const chunkEndDate = new Date(cursor);
+        chunkEndDate.setDate(chunkEndDate.getDate() + 29);
+        if (chunkEndDate > finalDate) chunkEndDate.setTime(finalDate.getTime());
+        const chunkEnd = fmt(chunkEndDate);
+        setFeedback({ type: 'ok', text: `Sincronizando métricas de ${chunkStart} até ${chunkEnd}...` });
+        const result = await syncInsights(project.id, { since: chunkStart, until: chunkEnd });
+        if (!result.ok) throw new Error(result.error ?? `Falha ao sincronizar ${chunkStart} até ${chunkEnd}.`);
+        totalDays += result.daysSynced ?? 0;
+        cursor = new Date(chunkEndDate);
+        cursor.setDate(cursor.getDate() + 1);
       }
 
       // Segunda chamada, separada de propósito (ver comentário no service) —
@@ -319,7 +335,7 @@ export function ProjectSettingsPage() {
 
       setFeedback({
         type: 'ok',
-        text: `Sincronizado: ${result.daysSynced ?? 0} dia(s) de métricas atualizados${entitiesText}.`,
+        text: `Sincronização histórica concluída: ${totalDays} dia(s) atualizados de ${syncStartDate} até ${until}${entitiesText}.`,
       });
       await reload();
     } catch (e) {
@@ -327,6 +343,12 @@ export function ProjectSettingsPage() {
     } finally {
       setSyncing(false);
     }
+  }
+
+  function setSyncHistoryDays(days: number) {
+    const date = new Date();
+    date.setDate(date.getDate() - (days - 1));
+    setSyncStartDate(fmt(date));
   }
 
   if (loading) return <LoadingView label="Carregando configurações..." />;
@@ -553,7 +575,13 @@ export function ProjectSettingsPage() {
           )}
 
           {canEdit && (
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-wrap items-end gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-panel-2)] p-3">
+                <label className="flex flex-col gap-1 text-[11px] text-[var(--color-text-muted)]">Sincronizar desde<input type="date" value={syncStartDate} max={fmt(new Date())} onChange={(event) => setSyncStartDate(event.target.value)} disabled={syncing} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-panel)] px-3 py-2 text-xs text-[var(--color-text)] disabled:opacity-50" /></label>
+                <div className="flex flex-wrap gap-1"><button type="button" onClick={() => setSyncHistoryDays(180)} disabled={syncing} className="rounded-lg border border-[var(--color-border)] px-2.5 py-2 text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)]">180 dias</button><button type="button" onClick={() => setSyncHistoryDays(365)} disabled={syncing} className="rounded-lg border border-[var(--color-border)] px-2.5 py-2 text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)]">1 ano</button><button type="button" onClick={() => setSyncHistoryDays(730)} disabled={syncing} className="rounded-lg border border-[var(--color-border)] px-2.5 py-2 text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)]">2 anos</button></div>
+                <span className="pb-2 text-[11px] text-[var(--color-text-faint)]">Até hoje: {fmt(new Date())}. A busca é feita em blocos de 30 dias.</span>
+              </div>
+              <div className="flex flex-wrap gap-2">
               <button
                 onClick={handleSave}
                 disabled={saving}
@@ -575,8 +603,9 @@ export function ProjectSettingsPage() {
                 className="flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm text-[var(--color-text)] hover:border-[var(--color-brand)] disabled:opacity-50"
               >
                 <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} />
-                {syncing ? 'Sincronizando...' : 'Sincronizar agora (últimos 180 dias)'}
+                {syncing ? 'Sincronizando histórico...' : 'Sincronizar de hoje para trás'}
               </button>
+              </div>
             </div>
           )}
 

@@ -21,7 +21,12 @@ export function presetToRange(preset: DateRangePreset): { start: string; end: st
 }
 
 export function fmt(d: Date) {
-  return d.toISOString().slice(0, 10);
+  // Date-only values must use the user's local calendar day. Using
+  // toISOString() shifts midnight to the previous day in UTC-3.
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 export function campaignIdsForProject(project: Project | undefined): Set<string> {

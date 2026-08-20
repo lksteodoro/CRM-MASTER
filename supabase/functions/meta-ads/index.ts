@@ -16,10 +16,107 @@
 // tabela não tem policy de INSERT/UPDATE para `authenticated` de propósito.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
-const GRAPH_VERSION = 'v21.0';
+// v21 deixou de representar a versão usada atualmente pelo Gerenciador e
+// começou a produzir diferenças/erros em campos de Insights. v24 mantém a
+// integração numa versão suportada sem depender implicitamente da versão mais
+// nova da Graph API.
+const GRAPH_VERSION = 'v24.0';
+
+interface MetaActionStat {
+  action_type: string;
+  value: string;
+}
+
+const INSIGHT_FIELDS = [
+  'spend',
+  'impressions',
+  'clicks',
+  'inline_link_clicks',
+  'outbound_clicks',
+  'reach',
+  'frequency',
+  'ctr',
+  'cpc',
+  'cpm',
+  'actions',
+  'action_values',
+  'cost_per_action_type',
+  'purchase_roas',
+  'website_purchase_roas',
+].join(',');
+
+function actionValue(actions: MetaActionStat[] | undefined, priorities: string[]) {
+  for (const type of priorities) {
+    const match = actions?.find((action) => action.action_type === type);
+    if (match) return Number(match.value ?? 0);
+  }
+  return 0;
+}
+
+function insightMetrics(row: {
+  spend?: string;
+  impressions?: string;
+  clicks?: string;
+  inline_link_clicks?: string;
+  reach?: string;
+  frequency?: string;
+  ctr?: string;
+  cpc?: string;
+  cpm?: string;
+  outbound_clicks?: MetaActionStat[];
+  actions?: MetaActionStat[];
+  action_values?: MetaActionStat[];
+  cost_per_action_type?: MetaActionStat[];
+  purchase_roas?: MetaActionStat[];
+  website_purchase_roas?: MetaActionStat[];
+}) {
+  const leads = actionValue(row.actions, [
+    'onsite_conversion.lead_grouped',
+    'lead',
+    'offsite_conversion.fb_pixel_lead',
+  ]);
+  const purchases = actionValue(row.actions, [
+    'omni_purchase',
+    'offsite_conversion.fb_pixel_purchase',
+    'purchase',
+  ]);
+  const purchaseValue = actionValue(row.action_values, [
+    'omni_purchase',
+    'offsite_conversion.fb_pixel_purchase',
+    'purchase',
+  ]);
+  return {
+    spend: Number(row.spend ?? 0),
+    impressions: Number(row.impressions ?? 0),
+    clicks: Number(row.clicks ?? 0),
+    link_clicks: Number(row.inline_link_clicks ?? 0),
+    outbound_clicks: actionValue(row.outbound_clicks, ['outbound_click']),
+    reach: Number(row.reach ?? 0),
+    frequency: Number(row.frequency ?? 0),
+    ctr: Number(row.ctr ?? 0),
+    cpc: Number(row.cpc ?? 0),
+    cpm: Number(row.cpm ?? 0),
+    leads,
+    landing_page_views: actionValue(row.actions, ['landing_page_view']),
+    post_engagement: actionValue(row.actions, ['post_engagement']),
+    video_views: actionValue(row.actions, ['video_view']),
+    thruplays: actionValue(row.actions, ['video_thruplay_watched_actions']),
+    purchases,
+    purchase_value: purchaseValue,
+    messaging_conversations_started: actionValue(row.actions, [
+      'onsite_conversion.messaging_conversation_started_7d',
+      'messaging_conversation_started_7d',
+    ]),
+    purchase_roas: actionValue(row.purchase_roas, ['omni_purchase', 'purchase']) ||
+      actionValue(row.website_purchase_roas, ['offsite_conversion.fb_pixel_purchase', 'purchase']),
+    actions: row.actions ?? [],
+    action_values: row.action_values ?? [],
+    cost_per_action_type: row.cost_per_action_type ?? [],
+  };
+}
 
 interface RequestBody {
-  action?: 'test' | 'sync' | 'sync_entities' | 'list_campaigns';
+  action?: 'test' | 'sync' | 'summary' | 'sync_entities' | 'list_campaigns';
   projectId?: string;
   since?: string;
   until?: string;
@@ -66,7 +163,7 @@ Deno.serve(async (req) => {
   const { action, projectId } = body;
   if (
     !projectId ||
-    (action !== 'test' && action !== 'sync' && action !== 'sync_entities' && action !== 'list_campaigns')
+    (action !== 'test' && action !== 'sync' && action !== 'summary' && action !== 'sync_entities' && action !== 'list_campaigns')
   ) {
     return json({ error: 'invalid_request' }, 400);
   }
@@ -154,13 +251,40 @@ Deno.serve(async (req) => {
     });
   }
 
+  if (action === 'summary') {
+    const selectedCampaignIds = new Set(integration.selected_campaign_ids ?? []);
+    const until = body.until ?? new Date().toISOString().slice(0, 10);
+    const since = body.since ?? new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const timeRange = encodeURIComponent(JSON.stringify({ since, until }));
+    const campaignFiltering = selectedCampaignIds.size > 0
+      ? `&filtering=${encodeURIComponent(JSON.stringify([{ field: 'campaign.id', operator: 'IN', value: Array.from(selectedCampaignIds) }]))}`
+      : '';
+    const url =
+      `https://graph.facebook.com/${GRAPH_VERSION}/${adAccountId}/insights` +
+      `?fields=${INSIGHT_FIELDS}&time_range=${timeRange}&level=account` +
+      '&action_report_time=conversion&use_account_attribution_setting=true' +
+      campaignFiltering + `&access_token=${encodeURIComponent(token)}`;
+    const response = await fetch(url);
+    const payload = await response.json();
+    if (!response.ok || payload.error) {
+      return json({ ok: false, error: payload.error?.message ?? 'Falha ao consultar o resumo da Meta.' });
+    }
+    const insight = payload.data?.[0];
+    return json({
+      ok: true,
+      since,
+      until,
+      metrics: insight ? insightMetrics(insight) : insightMetrics({}),
+    });
+  }
+
   if (action === 'sync_entities') {
     const selectedCampaignIds = new Set(integration.selected_campaign_ids ?? []);
 
     async function fetchAllPages(url: string): Promise<Record<string, unknown>[]> {
       const out: Record<string, unknown>[] = [];
       let next: string | null = url;
-      for (let page = 0; page < 10 && next; page++) {
+      for (let page = 0; page < 100 && next; page++) {
         const res = await fetch(next);
         const data = await res.json();
         if (!res.ok || data.error) break;
@@ -236,10 +360,15 @@ Deno.serve(async (req) => {
     body.since ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
   const timeRange = encodeURIComponent(JSON.stringify({ since, until }));
+  const campaignFiltering = selectedCampaignIds.size > 0
+    ? `&filtering=${encodeURIComponent(JSON.stringify([{ field: 'campaign.id', operator: 'IN', value: Array.from(selectedCampaignIds) }]))}`
+    : '';
+  const attributionParams = '&action_report_time=conversion&use_account_attribution_setting=true';
   const insightsUrl =
     `https://graph.facebook.com/${GRAPH_VERSION}/${adAccountId}/insights` +
-    `?fields=spend,impressions,clicks,inline_link_clicks,reach,actions` +
+    `?fields=${INSIGHT_FIELDS}` +
     `&time_range=${timeRange}&time_increment=1&level=account&limit=500` +
+    attributionParams + campaignFiltering +
     `&access_token=${encodeURIComponent(token)}`;
 
   const res = await fetch(insightsUrl);
@@ -261,24 +390,23 @@ Deno.serve(async (req) => {
     clicks?: string;
     inline_link_clicks?: string;
     reach?: string;
-    actions?: { action_type: string; value: string }[];
+    frequency?: string;
+    ctr?: string;
+    cpc?: string;
+    cpm?: string;
+    outbound_clicks?: MetaActionStat[];
+    actions?: MetaActionStat[];
+    action_values?: MetaActionStat[];
+    cost_per_action_type?: MetaActionStat[];
+    purchase_roas?: MetaActionStat[];
+    website_purchase_roas?: MetaActionStat[];
   }
 
-  const rows = ((data.data ?? []) as MetaInsightRow[]).map((d) => {
-    const leadAction = (d.actions ?? []).find(
-      (a) => a.action_type === 'lead' || a.action_type === 'onsite_conversion.lead_grouped'
-    );
-    return {
+  const rows = ((data.data ?? []) as MetaInsightRow[]).map((d) => ({
       project_id: projectId,
       date: d.date_start,
-      spend: Number(d.spend ?? 0),
-      impressions: Number(d.impressions ?? 0),
-      clicks: Number(d.clicks ?? 0),
-      link_clicks: Number(d.inline_link_clicks ?? 0),
-      reach: Number(d.reach ?? 0),
-      leads: Number(leadAction?.value ?? 0),
-    };
-  });
+      ...insightMetrics(d),
+    }));
 
   if (rows.length > 0) {
     const { error: upsertError } = await adminClient
@@ -309,7 +437,16 @@ Deno.serve(async (req) => {
     clicks?: string;
     inline_link_clicks?: string;
     reach?: string;
-    actions?: { action_type: string; value: string }[];
+    frequency?: string;
+    ctr?: string;
+    cpc?: string;
+    cpm?: string;
+    outbound_clicks?: MetaActionStat[];
+    actions?: MetaActionStat[];
+    action_values?: MetaActionStat[];
+    cost_per_action_type?: MetaActionStat[];
+    purchase_roas?: MetaActionStat[];
+    website_purchase_roas?: MetaActionStat[];
   }
 
   const adRows: {
@@ -325,18 +462,36 @@ Deno.serve(async (req) => {
     impressions: number;
     clicks: number;
     link_clicks: number;
+    outbound_clicks: number;
     reach: number;
+    frequency: number;
+    ctr: number;
+    cpc: number;
+    cpm: number;
     leads: number;
+    landing_page_views: number;
+    post_engagement: number;
+    video_views: number;
+    thruplays: number;
+    purchases: number;
+    purchase_value: number;
+    messaging_conversations_started: number;
+    purchase_roas: number;
+    actions: MetaActionStat[];
+    action_values: MetaActionStat[];
+    cost_per_action_type: MetaActionStat[];
   }[] = [];
 
   let nextUrl: string | null =
     `https://graph.facebook.com/${GRAPH_VERSION}/${adAccountId}/insights` +
-    `?fields=campaign_id,campaign_name,adset_id,adset_name,ad_id,ad_name,spend,impressions,clicks,inline_link_clicks,reach,actions` +
+    `?fields=campaign_id,campaign_name,adset_id,adset_name,ad_id,ad_name,${INSIGHT_FIELDS}` +
     `&time_range=${timeRange}&time_increment=1&level=ad&limit=500` +
+    attributionParams + campaignFiltering +
     `&access_token=${encodeURIComponent(token)}`;
 
-  // Limite de páginas para não rodar indefinidamente em contas muito grandes.
-  for (let page = 0; page < 10 && nextUrl; page++) {
+  // Proteção contra paginação circular sem truncar contas maiores em apenas
+  // 5.000 linhas (o limite anterior de 10 páginas causava totais incompletos).
+  for (let page = 0; page < 100 && nextUrl; page++) {
     const adRes = await fetch(nextUrl);
     const adData = await adRes.json();
 
@@ -350,9 +505,6 @@ Deno.serve(async (req) => {
     }
 
     for (const d of (adData.data ?? []) as MetaAdInsightRow[]) {
-      const leadAction = (d.actions ?? []).find(
-        (a) => a.action_type === 'lead' || a.action_type === 'onsite_conversion.lead_grouped'
-      );
       adRows.push({
         project_id: projectId,
         date: d.date_start,
@@ -362,12 +514,7 @@ Deno.serve(async (req) => {
         adset_name: d.adset_name ?? null,
         ad_id: d.ad_id,
         ad_name: d.ad_name,
-        spend: Number(d.spend ?? 0),
-        impressions: Number(d.impressions ?? 0),
-        clicks: Number(d.clicks ?? 0),
-        link_clicks: Number(d.inline_link_clicks ?? 0),
-        reach: Number(d.reach ?? 0),
-        leads: Number(leadAction?.value ?? 0),
+        ...insightMetrics(d),
       });
     }
 

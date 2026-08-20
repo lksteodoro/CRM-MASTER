@@ -4,6 +4,31 @@ import { parseCsv, guessMapping, type ParsedCsv } from '../../lib/csv';
 import type { Lead } from '../../types';
 import { useFilters } from '../../state/FiltersContext';
 
+function normalizeHeaderlessCsv(csv: ParsedCsv): ParsedCsv {
+  if (csv.headers.length === 0) return csv;
+
+  const normalizedHeaders = csv.headers.map((header) => header.toLowerCase());
+  const hasKnownHeader = normalizedHeaders.some((header) =>
+    ['nome', 'name', 'email', 'e-mail', 'telefone', 'phone', 'celular', 'whatsapp'].some((key) =>
+      header.includes(key)
+    )
+  );
+
+  if (hasKnownHeader) return csv;
+
+  const firstRow = csv.headers;
+  const phoneColumn = firstRow.findIndex((value) => value.replace(/\D/g, '').length >= 8);
+  const emailColumn = firstRow.findIndex((value) => value.includes('@'));
+  const headers = firstRow.map((_, index) => {
+    if (index === emailColumn) return 'Email';
+    if (index === phoneColumn) return 'Telefone';
+    if (index === 0) return 'Nome';
+    return `Coluna ${index + 1}`;
+  });
+
+  return { headers, rows: [firstRow, ...csv.rows] };
+}
+
 export function LeadsImportModal({ onClose }: { onClose: () => void }) {
   const { selectedProject, addImportedLeads } = useFilters();
   const [fileName, setFileName] = useState<string | null>(null);
@@ -18,7 +43,7 @@ export function LeadsImportModal({ onClose }: { onClose: () => void }) {
     const reader = new FileReader();
     reader.onload = () => {
       const text = String(reader.result ?? '');
-      const csv = parseCsv(text);
+      const csv = normalizeHeaderlessCsv(parseCsv(text));
       setParsed(csv);
       setMapping(guessMapping(csv.headers));
     };
