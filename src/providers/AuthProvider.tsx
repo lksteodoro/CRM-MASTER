@@ -3,12 +3,15 @@ import type { Session } from '@supabase/supabase-js';
 import { supabase } from '../integrations/supabase/client';
 import { fetchProfile, signOut as signOutService } from '../services/auth.service';
 import type { ProfileRow } from '../integrations/supabase/database.types';
+import { listMyAgencyToolPermissions, type AgencyToolKey } from '../services/agencyTools.service';
 
 interface AuthContextValue {
   session: Session | null;
   profile: ProfileRow | null;
   loading: boolean;
   isAdmin: boolean;
+  agencyToolAccess: AgencyToolKey[];
+  canUseAgencyTool: (tool: AgencyToolKey) => boolean;
   /** Cliente que o ADMIN escolheu inspecionar em "Ver como". Apenas visual. */
   previewClientId: string | null;
   setPreviewClientId: (clientId: string | null) => void;
@@ -22,6 +25,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<ProfileRow | null>(null);
   const [loading, setLoading] = useState(true);
+  const [agencyToolAccess, setAgencyToolAccess] = useState<AgencyToolKey[]>([]);
   const [previewClientId, setPreviewClientId] = useState<string | null>(null);
 
   // Guarda o id do usuário atual fora do estado React — o listener abaixo é
@@ -36,13 +40,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!nextSession?.user) {
         if (active) {
           setProfile(null);
+          setAgencyToolAccess([]);
           setLoading(false);
         }
         return;
       }
       try {
         const p = await fetchProfile(nextSession.user.id);
-        if (active) setProfile(p);
+        if (!active) return;
+        setProfile(p);
+        if (!p || p.role === 'ADMIN') {
+          setAgencyToolAccess([]);
+        } else {
+          try {
+            setAgencyToolAccess(await listMyAgencyToolPermissions());
+          } catch {
+            // Falha de permissões não torna a sessão inválida: apenas mantém o
+            // menu operacional oculto até que a consulta seja possível.
+            if (active) setAgencyToolAccess([]);
+          }
+        }
       } catch {
         if (active) setProfile(null);
       } finally {
@@ -90,20 +107,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       profile,
       loading,
       isAdmin: profile?.role === 'ADMIN',
+      agencyToolAccess,
+      canUseAgencyTool: (tool) => profile?.role === 'ADMIN' || agencyToolAccess.includes(tool),
       previewClientId,
       setPreviewClientId,
       signOut: async () => {
         await signOutService();
         setProfile(null);
+        setAgencyToolAccess([]);
         setSession(null);
         setPreviewClientId(null);
       },
       refreshProfile: async () => {
         if (!session?.user) return;
-        setProfile(await fetchProfile(session.user.id));
+        const nextProfile = await fetchProfile(session.user.id);
+        setProfile(nextProfile);
+        setAgencyToolAccess(nextProfile && nextProfile.role !== 'ADMIN' ? await listMyAgencyToolPermissions() : []);
       },
     }),
-    [session, profile, loading, previewClientId]
+    [session, profile, loading, previewClientId, agencyToolAccess]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

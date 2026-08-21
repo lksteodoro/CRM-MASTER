@@ -1,11 +1,18 @@
-import { useEffect, useState } from 'react';
-import { listArchivedAgencyTasks, agencyTaskCategoryLabels } from '../../services/agencyTasks.service';
-import type { AgencyTaskRow } from '../../integrations/supabase/database.types';
-import { LoadingView, ErrorView } from '../ui/StateView';
-import { Card } from '../ui/Card';
+import { useEffect, useState } from "react";
+import {
+  listArchivedAgencyTasks,
+  agencyTaskCategoryLabels,
+} from "../../services/agencyTasks.service";
+import type { AgencyTaskRow } from "../../integrations/supabase/database.types";
+import { LoadingView, ErrorView } from "../ui/StateView";
+import { Card } from "../ui/Card";
 
 function formatDateTime(iso: string) {
-  return new Date(iso).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  return new Date(iso).toLocaleDateString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
 }
 
 export function AgencyTaskArchiveList() {
@@ -19,7 +26,12 @@ export function AgencyTaskArchiveList() {
         if (active) setTasks(rows);
       })
       .catch((e) => {
-        if (active) setError(e instanceof Error ? e.message : 'Não foi possível carregar o arquivo.');
+        if (active)
+          setError(
+            e instanceof Error
+              ? e.message
+              : "Não foi possível carregar o histórico.",
+          );
       });
     return () => {
       active = false;
@@ -27,32 +39,39 @@ export function AgencyTaskArchiveList() {
   }, []);
 
   if (error) return <ErrorView message={error} />;
-  if (!tasks) return <LoadingView label="Carregando arquivo..." />;
+  if (!tasks) return <LoadingView label="Carregando histórico..." />;
 
   if (tasks.length === 0) {
     return (
       <Card>
         <p className="text-sm text-[var(--color-text-faint)]">
-          Nenhuma tarefa arquivada ainda — cards finalizados são arquivados automaticamente todo dia.
+          Nenhuma tarefa concluída de dias anteriores no histórico.
         </p>
       </Card>
     );
   }
 
   return (
-    <Card title={`Arquivadas (${tasks.length})`}>
+    <Card title={`Histórico (${tasks.length})`}>
       <div className="flex flex-col divide-y divide-[var(--color-border-soft)]">
         {tasks.map((task) => (
-          <div key={task.id} className="flex items-center justify-between gap-3 py-3">
+          <div
+            key={task.id}
+            className="flex items-center justify-between gap-3 py-3"
+          >
             <div>
               <p className="text-sm text-[var(--color-text)]">{task.title}</p>
               <p className="text-xs text-[var(--color-text-faint)]">
                 {agencyTaskCategoryLabels[task.category]}
-                {task.finished_at && ` · finalizada em ${formatDateTime(task.finished_at)}`}
+                {task.finished_at &&
+                  ` · finalizada em ${formatDateTime(task.finished_at)}`}
               </p>
             </div>
             <span className="shrink-0 text-[11px] text-[var(--color-text-faint)]">
-              {task.archived_at && `arquivada ${formatDateTime(task.archived_at)}`}
+              {task.archived_at
+                ? `arquivada ${formatDateTime(task.archived_at)}`
+                : task.finished_at &&
+                  `concluída ${formatDateTime(task.finished_at)}`}
             </span>
           </div>
         ))}

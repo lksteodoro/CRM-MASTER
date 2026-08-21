@@ -4,7 +4,7 @@ import { CalendarDays, Database, RefreshCw, ShieldCheck, Wifi } from 'lucide-rea
 import { useProject } from '../state/ProjectContext';
 import { useFilters } from '../state/FiltersContext';
 import { useMetaIntegrationStatus } from '../hooks/useMetaIntegrationStatus';
-import { syncEntities, syncInsights } from '../services/metaAds.service';
+import { getMetaLastSyncedAt, syncEntities, syncInsights } from '../services/metaAds.service';
 import { MetricsTabs } from '../components/metrics/MetricsTabs';
 import { MetaNotConnectedPrompt } from '../components/metrics/MetaNotConnectedPrompt';
 import { LoadingView } from '../components/ui/StateView';
@@ -18,6 +18,19 @@ export function Dashboard() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState('');
+  const [lastMetaSyncedAt, setLastMetaSyncedAt] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    if (metaStatus !== 'CONNECTED') {
+      setLastMetaSyncedAt(null);
+      return () => { active = false; };
+    }
+    void getMetaLastSyncedAt(project.id)
+      .then((value) => { if (active) setLastMetaSyncedAt(value); })
+      .catch(() => { if (active) setLastMetaSyncedAt(null); });
+    return () => { active = false; };
+  }, [metaStatus, project.id, refreshKey]);
 
   useEffect(() => {
     if (metaStatus !== 'CONNECTED') return;
@@ -73,6 +86,7 @@ export function Dashboard() {
       if (!insightsResult.ok) throw new Error(insightsResult.error ?? 'A Meta não retornou as métricas.');
       if (!entitiesResult.ok) throw new Error(entitiesResult.error ?? 'A Meta não retornou campanhas e anúncios.');
       setRefreshKey((value) => value + 1);
+      setLastMetaSyncedAt(new Date().toISOString());
       setSyncMessage('Dados da Meta atualizados agora.');
     } catch (caught) {
       setSyncMessage(caught instanceof Error ? caught.message : 'Não foi possível atualizar a Meta.');
@@ -109,15 +123,20 @@ export function Dashboard() {
           </div>
         </div>
         {metaStatus === 'CONNECTED' && (
-          <button
-            type="button"
-            onClick={() => void refreshMeta()}
-            disabled={syncing}
-            className="inline-flex items-center gap-2 rounded-xl border border-[var(--color-brand)]/35 bg-[linear-gradient(135deg,rgba(91,124,250,0.2),rgba(167,139,250,0.1))] px-4 py-2.5 text-xs font-semibold text-[var(--color-text)] shadow-[0_12px_35px_rgba(0,0,0,0.2)] transition hover:border-[var(--color-brand)] hover:bg-[var(--color-brand-soft)] disabled:opacity-50"
-          >
-            <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} />
-            {syncing ? 'Atualizando Meta...' : 'Atualizar dados da Meta'}
-          </button>
+          <div className="flex flex-col items-end gap-1.5">
+            <button
+              type="button"
+              onClick={() => void refreshMeta()}
+              disabled={syncing}
+              className="inline-flex items-center gap-2 rounded-xl border border-[var(--color-brand)]/35 bg-[linear-gradient(135deg,rgba(91,124,250,0.2),rgba(167,139,250,0.1))] px-4 py-2.5 text-xs font-semibold text-[var(--color-text)] shadow-[0_12px_35px_rgba(0,0,0,0.2)] transition hover:border-[var(--color-brand)] hover:bg-[var(--color-brand-soft)] disabled:opacity-50"
+            >
+              <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} />
+              {syncing ? 'Atualizando Meta...' : 'Atualizar dados da Meta'}
+            </button>
+            <span className="text-[11px] text-[var(--color-text-faint)]">
+              Última atualização da Meta: {lastMetaSyncedAt ? new Date(lastMetaSyncedAt).toLocaleString('pt-BR') : 'ainda não sincronizada'}
+            </span>
+          </div>
         )}
       </div>
 

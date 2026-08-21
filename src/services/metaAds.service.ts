@@ -16,6 +16,17 @@ export async function getIntegration(projectId: string): Promise<MetaIntegration
   return data;
 }
 
+/** Data da última sincronização, sem carregar as credenciais da integração. */
+export async function getMetaLastSyncedAt(projectId: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('meta_integrations')
+    .select('last_synced_at')
+    .eq('project_id', projectId)
+    .maybeSingle();
+  if (error) throw error;
+  return data?.last_synced_at ?? null;
+}
+
 /** Cria ou atualiza as credenciais da conta de anúncios do projeto. */
 export async function saveIntegration(
   projectId: string,
@@ -219,9 +230,10 @@ export async function listMetaEntities(
  */
 export async function listAdInsights(
   projectId: string,
-  range: { since: string; until: string }
+  range: { since: string; until: string },
+  selectedCampaignIds?: string[] | null
 ): Promise<MetaAdInsightDailyRow[]> {
-  const integration = await getIntegration(projectId);
+  const integration = selectedCampaignIds === undefined ? await getIntegration(projectId) : null;
 
   let query = supabase
     .from('meta_ad_insights_daily')
@@ -231,8 +243,9 @@ export async function listAdInsights(
     .lte('date', range.until)
     .order('date', { ascending: true });
 
-  if (integration?.selected_campaign_ids && integration.selected_campaign_ids.length > 0) {
-    query = query.in('campaign_id', integration.selected_campaign_ids);
+  const campaignIds = selectedCampaignIds ?? integration?.selected_campaign_ids;
+  if (campaignIds && campaignIds.length > 0) {
+    query = query.in('campaign_id', campaignIds);
   }
 
   const { data, error } = await query;

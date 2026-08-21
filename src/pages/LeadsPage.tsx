@@ -5,9 +5,8 @@ import { useAuth } from '../providers/AuthProvider';
 import { useProject } from '../state/ProjectContext';
 import { useFilters } from '../state/FiltersContext';
 import {
-  listLeadEvents,
-  listSales,
-  listContactsByIds,
+  listLeadEventsWithContacts,
+  listSalesWithContacts,
   computeCrmLeadStats,
   assignSeller,
   listProjectCustomFields,
@@ -26,6 +25,13 @@ interface ContactGroup {
   contact: ContactRow;
   events: LeadEventRow[];
   sales: SaleRow[];
+}
+
+const leadRowsCache = new Map<string, { events: LeadEventRow[]; contacts: ContactRow[] }>();
+const saleRowsCache = new Map<string, { sales: SaleRow[]; contacts: ContactRow[] }>();
+
+function rangeCacheKey(projectId: string, scope: 'all' | 'period', start: string, end: string) {
+  return `${projectId}:${scope}:${scope === 'period' ? `${start}:${end}` : 'all'}`;
 }
 
 export function LeadsPage() {
@@ -48,31 +54,58 @@ export function LeadsPage() {
   const [customSaleFields, setCustomSaleFields] = useState<ProjectCustomFieldRow[]>([]);
   const [salesPage, setSalesPage] = useState(1);
   const [salesPageSize, setSalesPageSize] = useState(50);
-  const [salesScope, setSalesScope] = useState<'all' | 'period'>('all');
-  const [leadScope, setLeadScope] = useState<'all' | 'period'>('all');
+  const [salesScope, setSalesScope] = useState<'all' | 'period'>('period');
+  const [leadScope, setLeadScope] = useState<'all' | 'period'>('period');
   const [leadPage, setLeadPage] = useState(1);
   const [leadPageSize, setLeadPageSize] = useState(50);
 
   useEffect(() => {
+    if (tab !== 'leads') return;
     let active = true;
     setEvents(null);
-    setSales(null);
     (async () => {
       const range = { since: dateRange.start, until: dateRange.end };
-      const [leadEvents, saleRows] = await Promise.all([
-        listLeadEvents(project.id, leadScope === 'period' ? range : undefined),
-        listSales(project.id, salesScope === 'period' ? range : undefined),
-      ]);
+      const key = rangeCacheKey(project.id, leadScope, range.since, range.until);
+      const cached = leadRowsCache.get(key);
+      if (cached) {
+        if (!active) return;
+        setEvents(cached.events);
+        setContacts((current) => mergeContacts(current, cached.contacts));
+        return;
+      }
+      const result = await listLeadEventsWithContacts(project.id, leadScope === 'period' ? range : undefined);
       if (!active) return;
-      setEvents(leadEvents);
-      setSales(saleRows);
-      const ids = Array.from(new Set([...leadEvents.map((e) => e.contact_id), ...saleRows.map((s) => s.contact_id)]));
-      setContacts(await listContactsByIds(ids));
+      setEvents(result.events);
+      leadRowsCache.set(key, result);
+      setContacts((current) => mergeContacts(current, result.contacts));
     })();
     return () => {
       active = false;
     };
-  }, [project.id, dateRange.start, dateRange.end, reloadToken, salesScope, leadScope]);
+  }, [project.id, dateRange.start, dateRange.end, reloadToken, leadScope, tab]);
+
+  useEffect(() => {
+    if (tab !== 'vendas') return;
+    let active = true;
+    setSales(null);
+    (async () => {
+      const range = { since: dateRange.start, until: dateRange.end };
+      const key = rangeCacheKey(project.id, salesScope, range.since, range.until);
+      const cached = saleRowsCache.get(key);
+      if (cached) {
+        if (!active) return;
+        setSales(cached.sales);
+        setContacts((current) => mergeContacts(current, cached.contacts));
+        return;
+      }
+      const result = await listSalesWithContacts(project.id, salesScope === 'period' ? range : undefined);
+      if (!active) return;
+      saleRowsCache.set(key, result);
+      setSales(result.sales);
+      setContacts((current) => mergeContacts(current, result.contacts));
+    })();
+    return () => { active = false; };
+  }, [project.id, dateRange.start, dateRange.end, reloadToken, salesScope, tab]);
 
   useEffect(() => {
     let active = true;
@@ -97,7 +130,7 @@ export function LeadsPage() {
   }
 
   const groups = useMemo<ContactGroup[]>(() => {
-    if (!events || !sales) return [];
+    if (!events) return [];
     const byContact = new Map<string, ContactGroup>();
     for (const contact of contacts) {
       byContact.set(contact.id, { contact, events: [], sales: [] });
@@ -105,7 +138,7 @@ export function LeadsPage() {
     for (const e of events) {
       byContact.get(e.contact_id)?.events.push(e);
     }
-    for (const s of sales) {
+    for (const s of sales ?? []) {
       byContact.get(s.contact_id)?.sales.push(s);
     }
     return Array.from(byContact.values()).sort((a, b) => {
@@ -158,7 +191,8 @@ export function LeadsPage() {
     return Array.from(columns.values());
   }, [customSaleFields, sales]);
 
-  if (events === null || sales === null) return <LoadingView label={leadScope === 'all' ? 'Carregando todo o histórico de leads...' : 'Carregando leads do período...'} />;
+  if (tab === 'leads' && events === null) return <LoadingView label={leadScope === 'all' ? 'Carregando todo o histórico de leads...' : 'Carregando leads do período...'} />;
+  if (tab === 'vendas' && sales === null) return <LoadingView label={salesScope === 'all' ? 'Carregando todo o histórico de vendas...' : 'Carregando vendas do período...'} />;
 
   return (
     <div className="flex flex-col gap-6 p-6">
@@ -198,7 +232,7 @@ export function LeadsPage() {
 
       <div className="flex gap-1 border-b border-[var(--color-border)]">
         <TabButton active={tab === 'leads'} onClick={() => setTab('leads')} label={`Leads (${visibleGroups.length})`} />
-        <TabButton active={tab === 'vendas'} onClick={() => setTab('vendas')} label={`Vendas (${sales.length})`} />
+        <TabButton active={tab === 'vendas'} onClick={() => setTab('vendas')} label={`Vendas (${sales?.length ?? 0})`} />
       </div>
 
       {tab === 'leads' && (
@@ -219,7 +253,7 @@ export function LeadsPage() {
                 <Repeat size={12} /> {repeatCount} lead{repeatCount > 1 ? 's' : ''} com mais de uma entrada
               </span>
             )}
-            <span className="rounded-full border border-[var(--color-border)] bg-[var(--color-panel)] px-3 py-1.5 text-xs text-[var(--color-text-muted)]">{formatNumber(events.length)} entradas totais</span>
+            <span className="rounded-full border border-[var(--color-border)] bg-[var(--color-panel)] px-3 py-1.5 text-xs text-[var(--color-text-muted)]">{formatNumber(events?.length ?? 0)} entradas totais</span>
             <span className="rounded-full border border-[var(--color-border)] bg-[var(--color-panel)] px-3 py-1.5 text-xs text-[var(--color-text-muted)]">{formatNumber(visibleGroups.length)} contatos únicos</span>
             <label className="ml-auto flex items-center gap-2 text-xs text-[var(--color-text-muted)]">Linhas por página<select value={leadPageSize} onChange={(event) => setLeadPageSize(Number(event.target.value))} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-panel)] px-2 py-1 text-[var(--color-text)]"><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option><option value={250}>250</option></select></label>
           </div>
@@ -306,7 +340,7 @@ export function LeadsPage() {
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <SummaryTile label="Total Vendido" value={formatBRL(stats?.revenue ?? 0)} accent="var(--color-good)" />
             <SummaryTile label="Ticket Médio" value={formatBRL(ticketMedio)} />
-            <SummaryTile label="Vendas no Período" value={formatNumber(sales.length)} />
+            <SummaryTile label="Vendas no Período" value={formatNumber(sales?.length ?? 0)} />
             <SummaryTile
               label="Taxa Lead → Venda"
               value={formatPercent(stats?.percentConverted ?? 0)}
@@ -314,7 +348,7 @@ export function LeadsPage() {
             />
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-[var(--color-text-muted)]"><span>Mostrando {sales.length === 0 ? 0 : (salesPage - 1) * salesPageSize + 1}–{Math.min(salesPage * salesPageSize, sales.length)} de {sales.length} vendas</span><label className="flex items-center gap-2">Linhas por página<select value={salesPageSize} onChange={(event) => setSalesPageSize(Number(event.target.value))} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-panel)] px-2 py-1 text-[var(--color-text)]"><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option><option value={250}>250</option></select></label></div>
+          <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-[var(--color-text-muted)]"><span>Mostrando {(sales?.length ?? 0) === 0 ? 0 : (salesPage - 1) * salesPageSize + 1}–{Math.min(salesPage * salesPageSize, sales?.length ?? 0)} de {sales?.length ?? 0} vendas</span><label className="flex items-center gap-2">Linhas por página<select value={salesPageSize} onChange={(event) => setSalesPageSize(Number(event.target.value))} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-panel)] px-2 py-1 text-[var(--color-text)]"><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option><option value={250}>250</option></select></label></div>
           <Card className="overflow-x-auto">
             <table className="w-full border-collapse text-sm" style={{ minWidth: 1080 + dynamicSaleColumns.length * 170 }}>
               <thead>
@@ -382,7 +416,7 @@ export function LeadsPage() {
                     </tr>
                   );
                 })}
-                {sales.length === 0 && (
+                {(sales?.length ?? 0) === 0 && (
                   <tr>
                     <td colSpan={9 + dynamicSaleColumns.length} className="py-6 text-center text-xs text-[var(--color-text-faint)]">
                       Nenhuma venda registrada no período.
@@ -405,9 +439,15 @@ export function LeadsPage() {
         />
       )}
       {showSalesImport && <SalesImportModal onClose={() => setShowSalesImport(false)} onImported={(range) => { setTab('vendas'); setCustomRange(range.start, range.end); setReloadToken((value) => value + 1); }} />}
-      {showLeadImport && <LeadImportModal onClose={() => setShowLeadImport(false)} onImported={(range) => { setTab('leads'); setLeadScope('all'); setCustomRange(range.start, range.end); setReloadToken((value) => value + 1); }} />}
+      {showLeadImport && <LeadImportModal onClose={() => setShowLeadImport(false)} onImported={(range) => { setTab('leads'); setLeadScope('period'); setCustomRange(range.start, range.end); setReloadToken((value) => value + 1); }} />}
     </div>
   );
+}
+
+function mergeContacts(current: ContactRow[], incoming: ContactRow[]) {
+  const byId = new Map(current.map((contact) => [contact.id, contact]));
+  incoming.forEach((contact) => byId.set(contact.id, contact));
+  return Array.from(byId.values());
 }
 
 function TabButton({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {

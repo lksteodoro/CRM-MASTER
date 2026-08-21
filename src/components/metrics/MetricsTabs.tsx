@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useProject } from '../../state/ProjectContext';
 import { useFilters } from '../../state/FiltersContext';
 import {
+  getIntegration,
   getMetaAdsManagerSummary,
   listAdInsights,
   listMetaEntities,
@@ -45,21 +46,84 @@ interface DashboardCacheEntry {
 
 const dashboardCache = new Map<string, DashboardCacheEntry>();
 const leadHistoryCache = new Map<string, { rows: LeadEventRow[]; loadedAt: number }>();
-const DASHBOARD_CACHE_MS = 2 * 60 * 1000;
+const DASHBOARD_CACHE_MS = 5 * 60 * 1000;
 const LEAD_HISTORY_CACHE_MS = 10 * 60 * 1000;
+const DASHBOARD_SESSION_CACHE_PREFIX = 'crm:metrics-dashboard:';
 
-async function loadRaw(projectId: string, since: string, until: string): Promise<PeriodRaw> {
+function readSessionCache(cacheKey: string): DashboardCacheEntry | null {
+  try {
+    const raw = window.sessionStorage.getItem(`${DASHBOARD_SESSION_CACHE_PREFIX}${cacheKey}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as DashboardCacheEntry;
+    if (!parsed?.current || !parsed?.previous || !parsed.loadedAt) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeSessionCache(cacheKey: string, entry: DashboardCacheEntry) {
+  try {
+    // Evita ocupar toda a sessão com projetos muito grandes. O cache em memória
+    // ainda segue ativo neste caso; a próxima navegação volta a buscar os dados.
+    const serialized = JSON.stringify(entry);
+    if (serialized.length <= 1_500_000) {
+      window.sessionStorage.setItem(`${DASHBOARD_SESSION_CACHE_PREFIX}${cacheKey}`, serialized);
+    }
+  } catch {
+    // Cache é só uma otimização; nunca deve impedir o dashboard de abrir.
+  }
+}
+
+async function loadRaw(
+  projectId: string,
+  since: string,
+  until: string,
+  selectedCampaignIds?: string[] | null,
+  includeMetaSummary = false,
+): Promise<PeriodRaw> {
   const range = { since, until };
   const [adInsights, periodLeadEvents, sales, metaSummary] = await Promise.all([
-    listAdInsights(projectId, range).catch(() => []),
+    listAdInsights(projectId, range, selectedCampaignIds).catch(() => []),
     listLeadEvents(projectId, range).catch(() => []),
     listSales(projectId, range).catch(() => []),
-    getMetaAdsManagerSummary(projectId, range).catch(() => null),
+    includeMetaSummary ? getMetaAdsManagerSummary(projectId, range).catch(() => null) : Promise.resolve(null),
   ]);
-  const periodIds = new Set(periodLeadEvents.map((event) => event.id));
-  const linkedIds = sales.map((sale) => sale.lead_event_id).filter((id): id is string => Boolean(id) && !periodIds.has(id!));
+  return { adInsights, leadEvents: periodLeadEvents, attributionLeadEvents: periodLeadEvents, sales, metaSummary };
+}
+
+async function enrichAttribution(projectId: string, periods: PeriodRaw[]) {
+  const linkedIds = periods
+    .flatMap((period) => {
+      const periodIds = new Set(period.leadEvents.map((event) => event.id));
+      return period.sales
+        .map((sale) => sale.lead_event_id)
+        .filter((id): id is string => Boolean(id) && !periodIds.has(id!));
+    });
   const linkedLeadEvents = await listLeadEventsByIds(linkedIds).catch(() => []);
-  return { adInsights, leadEvents: periodLeadEvents, attributionLeadEvents: [...periodLeadEvents, ...linkedLeadEvents], sales, metaSummary };
+
+  for (const period of periods) {
+    const knownIds = new Set(period.attributionLeadEvents.map((event) => event.id));
+    const linkedForPeriod = new Set(period.sales.map((sale) => sale.lead_event_id).filter(Boolean));
+    period.attributionLeadEvents = [
+      ...period.attributionLeadEvents,
+      ...linkedLeadEvents.filter((event) => linkedForPeriod.has(event.id) && !knownIds.has(event.id)),
+    ];
+  }
+
+  if (!periods.some((period) => period.sales.some((sale) => !sale.lead_event_id))) return;
+  const cachedHistory = leadHistoryCache.get(projectId);
+  const history = cachedHistory && Date.now() - cachedHistory.loadedAt < LEAD_HISTORY_CACHE_MS
+    ? cachedHistory.rows
+    : await listLeadEvents(projectId).catch(() => []);
+  if (!cachedHistory || history !== cachedHistory.rows) {
+    leadHistoryCache.set(projectId, { rows: history, loadedAt: Date.now() });
+  }
+  for (const period of periods) {
+    const contactIds = new Set(period.sales.map((sale) => sale.contact_id));
+    const knownIds = new Set(period.attributionLeadEvents.map((event) => event.id));
+    period.attributionLeadEvents = [...period.attributionLeadEvents, ...history.filter((event) => contactIds.has(event.contact_id) && !knownIds.has(event.id))];
+  }
 }
 
 export function MetricsTabs({ refreshKey = 0 }: { refreshKey?: number }) {
@@ -72,8 +136,9 @@ export function MetricsTabs({ refreshKey = 0 }: { refreshKey?: number }) {
   useEffect(() => {
     let active = true;
     const cacheKey = `${project.id}:${dateRange.start}:${dateRange.end}`;
-    const cached = dashboardCache.get(cacheKey);
+    const cached = dashboardCache.get(cacheKey) ?? readSessionCache(cacheKey);
     if (cached) {
+      dashboardCache.set(cacheKey, cached);
       setCurrent(cached.current);
       setPrevious(cached.previous);
       setEntities(cached.entities);
@@ -86,29 +151,32 @@ export function MetricsTabs({ refreshKey = 0 }: { refreshKey?: number }) {
     }
     (async () => {
       const prev = previousPeriod(dateRange.start, dateRange.end);
+      const integration = await getIntegration(project.id).catch(() => null);
+      const selectedCampaignIds = integration?.selected_campaign_ids ?? null;
       const [curData, prevData, entityRows] = await Promise.all([
-        loadRaw(project.id, dateRange.start, dateRange.end),
-        loadRaw(project.id, prev.since, prev.until),
+        loadRaw(project.id, dateRange.start, dateRange.end, selectedCampaignIds, true),
+        // O resumo externo da Meta é necessário apenas para o período atual.
+        // O anterior usa os insights já sincronizados, poupando uma chamada lenta.
+        loadRaw(project.id, prev.since, prev.until, selectedCampaignIds),
         listMetaEntities(project.id).catch(() => []),
       ]);
-      const periods = [curData, prevData];
-      if (periods.some((period) => period.sales.some((sale) => !sale.lead_event_id))) {
-        const cachedHistory = leadHistoryCache.get(project.id);
-        const history = cachedHistory && Date.now() - cachedHistory.loadedAt < LEAD_HISTORY_CACHE_MS
-          ? cachedHistory.rows
-          : await listLeadEvents(project.id).catch(() => []);
-        if (!cachedHistory || history !== cachedHistory.rows) leadHistoryCache.set(project.id, { rows: history, loadedAt: Date.now() });
-        for (const period of periods) {
-          const contactIds = new Set(period.sales.map((sale) => sale.contact_id));
-          const knownIds = new Set(period.attributionLeadEvents.map((event) => event.id));
-          period.attributionLeadEvents.push(...history.filter((event) => contactIds.has(event.contact_id) && !knownIds.has(event.id)));
-        }
-      }
       if (!active) return;
-      dashboardCache.set(cacheKey, { current: curData, previous: prevData, entities: entityRows, loadedAt: Date.now(), refreshKey });
+      const initialEntry = { current: curData, previous: prevData, entities: entityRows, loadedAt: Date.now(), refreshKey };
+      dashboardCache.set(cacheKey, initialEntry);
+      writeSessionCache(cacheKey, initialEntry);
       setCurrent(curData);
       setPrevious(prevData);
       setEntities(entityRows);
+
+      // O cruzamento histórico só é necessário para atribuição/ranking. Ele é
+      // feito depois que os cards e gráficos principais já estão visíveis.
+      await enrichAttribution(project.id, [curData, prevData]);
+      if (!active) return;
+      const enrichedEntry = { current: { ...curData }, previous: { ...prevData }, entities: entityRows, loadedAt: Date.now(), refreshKey };
+      dashboardCache.set(cacheKey, enrichedEntry);
+      writeSessionCache(cacheKey, enrichedEntry);
+      setCurrent(enrichedEntry.current);
+      setPrevious(enrichedEntry.previous);
     })();
     return () => { active = false; };
   }, [project.id, dateRange.start, dateRange.end, refreshKey]);

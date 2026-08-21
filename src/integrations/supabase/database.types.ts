@@ -83,6 +83,33 @@ export type Database = {
         };
         Relationships: [];
       };
+      agency_tool_permissions: {
+        Row: {
+          id: string;
+          organization_id: string;
+          user_id: string;
+          tool_key: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          organization_id: string;
+          user_id: string;
+          tool_key: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          user_id?: string;
+          tool_key?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
       clients: {
         Row: {
           id: string;
@@ -1575,6 +1602,10 @@ export type Database = {
         Args: { p_slug: string };
         Returns: Array<{ target_url: string; delay_seconds: number; link_name: string }>;
       };
+      set_user_agency_tool_permissions: {
+        Args: { p_user_id: string; p_tool_keys: string[] };
+        Returns: undefined;
+      };
     };
     Enums: { [_ in never]: never };
     CompositeTypes: { [_ in never]: never };
@@ -1586,6 +1617,7 @@ type Tables = Database['public']['Tables'];
 
 export type OrganizationRow = Tables['organizations']['Row'];
 export type ProfileRow = Tables['profiles']['Row'];
+export type AgencyToolPermissionRow = Tables['agency_tool_permissions']['Row'];
 export type ClientRow = Tables['clients']['Row'];
 export type ClientUserRow = Tables['client_users']['Row'];
 export type ClientDisparoProfileRow = Tables['client_disparo_profiles']['Row'];

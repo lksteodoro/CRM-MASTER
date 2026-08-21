@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   AlertTriangle,
   Check,
@@ -11,7 +12,6 @@ import {
   FileVideo,
   Image,
   Info,
-  KeyRound,
   Layers3,
   Link2,
   LoaderCircle,
@@ -35,8 +35,6 @@ import {
   createBroadcastDraft,
   createInfobipSender,
   deleteTemplateModel,
-  diagnoseInfobipScheduling,
-  getInfobipApiConfig,
   getOrCreateInfobipSender,
   getVariableIndexes,
   listApprovedInfobipTemplates,
@@ -47,12 +45,10 @@ import {
   listTemplateSubmissions,
   normalizeTemplateName,
   retryTemplateSubmissions,
-  saveInfobipApiConfig,
   saveTemplateModel,
   submitTemplateBatch,
   syncInfobipSenders,
   syncTemplateStatuses,
-  testInfobipApiConfig,
   uploadTemplateMedia,
 } from "../../services/infobipTemplates.service";
 import type {
@@ -181,12 +177,6 @@ export function InfobipTemplatesPage() {
   const [queuedCount, setQueuedCount] = useState(0);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [showApiConfig, setShowApiConfig] = useState(false);
-  const [apiBaseUrl, setApiBaseUrl] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [apiKeyHint, setApiKeyHint] = useState("");
-  const [apiConfigured, setApiConfigured] = useState(false);
-  const [apiBusy, setApiBusy] = useState(false);
 
   async function load() {
     const results = await Promise.allSettled([
@@ -578,90 +568,6 @@ export function InfobipTemplatesPage() {
       throw caught;
     }
   }
-  async function openApiConfig() {
-    setShowApiConfig(true);
-    setApiBusy(true);
-    setError("");
-    try {
-      const config = await getInfobipApiConfig();
-      if (!config) throw new Error("Configuração indisponível.");
-      setApiBaseUrl(config.baseUrl || "");
-      setApiKeyHint(config.keyHint || "");
-      setApiConfigured(config.configured);
-    } catch {
-      setApiBaseUrl("");
-      setApiKeyHint("");
-      setApiConfigured(false);
-    } finally {
-      setApiBusy(false);
-    }
-  }
-  async function saveApiConfig() {
-    if (!apiBaseUrl.trim() || !apiKey.trim())
-      return setError("Informe a Base URL e a API Key da Infobip.");
-    setApiBusy(true);
-    setError("");
-    try {
-      const config = await saveInfobipApiConfig(
-        apiBaseUrl.trim(),
-        apiKey.trim(),
-      );
-      if (!config) throw new Error("A API não confirmou o salvamento.");
-      setApiConfigured(true);
-      setApiKeyHint(config.keyHint || apiKey.slice(-4));
-      setApiKey("");
-      setMessage("Credenciais da Infobip salvas com segurança no servidor.");
-    } catch (caught) {
-      setError(
-        caught instanceof Error
-          ? caught.message
-          : "Não foi possível salvar a configuração.",
-      );
-    } finally {
-      setApiBusy(false);
-    }
-  }
-  async function testApiConfig() {
-    setApiBusy(true);
-    setError("");
-    try {
-      await testInfobipApiConfig();
-      setApiConfigured(true);
-      setMessage("Conexão com a Infobip validada com sucesso.");
-    } catch (caught) {
-      setError(
-        caught instanceof Error ? caught.message : "Falha ao testar a Infobip.",
-      );
-    } finally {
-      setApiBusy(false);
-    }
-  }
-
-  async function diagnoseScheduling() {
-    setApiBusy(true);
-    setError("");
-    setMessage("");
-    try {
-      const results = await diagnoseInfobipScheduling();
-      const summary = results
-        .map(
-          (probe) =>
-            `${probe.path} → ${probe.error ?? `HTTP ${probe.status}`}${probe.body ? ` · ${probe.body}` : ""}`,
-        )
-        .join("\n");
-      setMessage(`Diagnóstico de agendamento:\n${summary}`);
-      console.log("Diagnóstico de agendamento Infobip:", results);
-    } catch (caught) {
-      setError(
-        caught instanceof Error
-          ? caught.message
-          : "Falha ao diagnosticar o agendamento.",
-      );
-    } finally {
-      setApiBusy(false);
-    }
-  }
-
   return (
     <main className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 p-4 sm:p-6 lg:p-8">
       <header className="flex flex-wrap items-start justify-between gap-4">
@@ -677,12 +583,9 @@ export function InfobipTemplatesPage() {
             Infobip.
           </p>
         </div>
-        <button className={buttonClass} onClick={() => void openApiConfig()}>
-          <Settings size={15} /> Configurar API Infobip{" "}
-          {apiConfigured && (
-            <span className="h-2 w-2 rounded-full bg-emerald-400" />
-          )}
-        </button>
+        <Link to="/agency/configuracoes?aba=apis" className={buttonClass}>
+          APIs e integrações
+        </Link>
       </header>
       <nav className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] p-2">
         <div className="flex flex-wrap gap-1">
@@ -1067,22 +970,6 @@ export function InfobipTemplatesPage() {
           onClose={() => !busy && setBatchModel(undefined)}
           onSend={() => void sendBatch(false)}
           onRetry={() => void sendBatch(true)}
-        />
-      )}
-      {showApiConfig && (
-        <ApiConfigModal
-          baseUrl={apiBaseUrl}
-          apiKey={apiKey}
-          keyHint={apiKeyHint}
-          configured={apiConfigured}
-          busy={apiBusy}
-          error={error}
-          onBaseUrlChange={setApiBaseUrl}
-          onApiKeyChange={setApiKey}
-          onSave={() => void saveApiConfig()}
-          onTest={() => void testApiConfig()}
-          onDiagnose={() => void diagnoseScheduling()}
-          onClose={() => !apiBusy && setShowApiConfig(false)}
         />
       )}
     </main>
@@ -2232,145 +2119,6 @@ function BatchModal({
                 <Send size={15} />
               )}{" "}
               Subir {rows.length} template(s)
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ApiConfigModal({
-  baseUrl,
-  apiKey,
-  keyHint,
-  configured,
-  busy,
-  error,
-  onBaseUrlChange,
-  onApiKeyChange,
-  onSave,
-  onTest,
-  onDiagnose,
-  onClose,
-}: {
-  baseUrl: string;
-  apiKey: string;
-  keyHint: string;
-  configured: boolean;
-  busy: boolean;
-  error: string;
-  onBaseUrlChange: (value: string) => void;
-  onApiKeyChange: (value: string) => void;
-  onSave: () => void;
-  onTest: () => void;
-  onDiagnose: () => void;
-  onClose: () => void;
-}) {
-  return (
-    <div
-      className="fixed inset-0 z-[110] grid place-items-center bg-black/75 p-4 backdrop-blur-sm"
-      role="dialog"
-      aria-modal="true"
-    >
-      <div className="w-full max-w-xl rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] shadow-2xl">
-        <div className="flex items-start justify-between border-b border-[var(--color-border)] p-5">
-          <div className="flex gap-3">
-            <span className="grid h-10 w-10 place-items-center rounded-xl bg-emerald-500/10 text-emerald-300">
-              <KeyRound size={18} />
-            </span>
-            <div>
-              <h2 className="font-semibold text-[var(--color-text)]">
-                Configurar API Infobip
-              </h2>
-              <p className="text-xs text-[var(--color-text-muted)]">
-                A chave fica cifrada no servidor e nunca é devolvida ao
-                navegador.
-              </p>
-            </div>
-          </div>
-          <button
-            className="rounded-lg p-2 text-[var(--color-text-muted)] hover:bg-[var(--color-panel-2)]"
-            onClick={onClose}
-          >
-            <X size={18} />
-          </button>
-        </div>
-        <div className="space-y-4 p-5">
-          <div
-            className={`flex items-center gap-2 rounded-xl border p-3 text-xs ${configured ? "border-emerald-500/25 bg-emerald-500/[0.06] text-emerald-300" : "border-amber-500/25 bg-amber-500/[0.06] text-amber-300"}`}
-          >
-            {configured ? (
-              <CheckCircle2 size={15} />
-            ) : (
-              <AlertTriangle size={15} />
-            )}
-            {configured
-              ? `Configurada${keyHint ? ` · chave final ${keyHint}` : ""}`
-              : "Credenciais ainda não configuradas nesta organização."}
-          </div>
-          {error && (
-            <div className="rounded-xl border border-red-500/25 bg-red-500/[0.06] p-3 text-xs text-red-300">
-              {error}
-            </div>
-          )}
-          <label>
-            <FieldLabel>Base URL</FieldLabel>
-            <input
-              className={`${inputClass} mt-1.5`}
-              type="url"
-              placeholder="https://xxxxx.api.infobip.com"
-              value={baseUrl}
-              disabled={busy}
-              onChange={(event) => onBaseUrlChange(event.target.value)}
-            />
-          </label>
-          <label>
-            <FieldLabel>API Key</FieldLabel>
-            <input
-              className={`${inputClass} mt-1.5 font-mono`}
-              type="password"
-              autoComplete="new-password"
-              placeholder={
-                configured
-                  ? `••••••••••••${keyHint}`
-                  : "Cole a API Key da Infobip"
-              }
-              value={apiKey}
-              disabled={busy}
-              onChange={(event) => onApiKeyChange(event.target.value)}
-            />
-            <p className="mt-1 text-[10px] text-[var(--color-text-faint)]">
-              Não inclua o prefixo “App”. Para trocar a chave, informe uma nova
-              e salve.
-            </p>
-          </label>
-          <div className="flex flex-wrap justify-end gap-2 pt-2">
-            <button
-              className={buttonClass}
-              disabled={busy || !configured}
-              onClick={onTest}
-            >
-              {busy ? (
-                <LoaderCircle size={14} className="animate-spin" />
-              ) : (
-                <RefreshCw size={14} />
-              )}{" "}
-              Testar conexão
-            </button>
-            <button
-              className={buttonClass}
-              disabled={busy || !configured}
-              onClick={onDiagnose}
-            >
-              <Info size={14} /> Diagnosticar agendamento
-            </button>
-            <button
-              className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
-              disabled={busy || !baseUrl.trim() || !apiKey.trim()}
-              onClick={onSave}
-            >
-              <Save size={14} /> Salvar credenciais
             </button>
           </div>
         </div>

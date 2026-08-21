@@ -38,9 +38,9 @@ export function AgencyHomePage() {
   if (error) return <ErrorView message={error} onRetry={() => void load()} />;
 
   const cards = [
-    { label: 'Clientes', value: counts.clients, icon: Building2, to: '/admin/clients', description: null },
-    { label: 'Projetos', value: counts.projects, icon: FolderKanban, to: '/admin/projects', description: null },
-    { label: 'Usuários', value: counts.users, icon: Users, to: '/admin/users', description: null },
+    { label: 'Clientes', value: counts.clients, icon: Building2, to: '/agency/configuracoes?aba=clients', description: null },
+    { label: 'Projetos', value: counts.projects, icon: FolderKanban, to: '/agency/configuracoes?aba=projects', description: null },
+    { label: 'Usuários', value: counts.users, icon: Users, to: '/agency/configuracoes?aba=users', description: null },
     {
       label: 'Kanban',
       value: null,
@@ -59,7 +59,7 @@ export function AgencyHomePage() {
       label: 'Auditoria',
       value: null,
       icon: ScrollText,
-      to: '/admin/audit',
+      to: '/agency/configuracoes?aba=audit',
       description: 'Histórico de alterações',
     },
   ];

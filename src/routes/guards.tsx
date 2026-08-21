@@ -2,6 +2,7 @@ import { Navigate, Outlet, useLocation, useParams } from 'react-router-dom';
 import { useAuth } from '../providers/AuthProvider';
 import { useProjectAccess } from '../hooks/useProjectAccess';
 import { LoadingView, ErrorView } from '../components/ui/StateView';
+import type { AgencyToolKey } from '../services/agencyTools.service';
 
 /** Exige sessão válida e profile ACTIVE. */
 export function ProtectedRoute() {
@@ -30,6 +31,20 @@ export function AdminRoute() {
 
   if (loading) return <LoadingView />;
   if (!isAdmin) return <Navigate to="/projects" replace />;
+
+  return <Outlet />;
+}
+
+/**
+ * Libera uma ferramenta operacional específica para ADMINs e para os usuários
+ * que receberam a chave correspondente em Configurações > Usuários e acessos.
+ * A verificação existe também na rota para que digitar a URL não contorne o menu.
+ */
+export function AgencyToolRoute({ tool }: { tool: AgencyToolKey }) {
+  const { canUseAgencyTool, loading } = useAuth();
+
+  if (loading) return <LoadingView />;
+  if (!canUseAgencyTool(tool)) return <Navigate to="/projects" replace />;
 
   return <Outlet />;
 }

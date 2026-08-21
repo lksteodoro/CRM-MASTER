@@ -101,6 +101,44 @@ export async function listLeadEvents(
   return rows;
 }
 
+/**
+ * Carrega eventos e seus contatos na mesma consulta. Evita uma chamada extra
+ * para cada lote de IDs quando o projeto tem milhares de leads.
+ */
+export async function listLeadEventsWithContacts(
+  projectId: string,
+  range?: { since: string; until: string }
+): Promise<{ events: LeadEventRow[]; contacts: ContactRow[] }> {
+  const events: LeadEventRow[] = [];
+  const contacts = new Map<string, ContactRow>();
+  const pageSize = 1000;
+
+  for (let from = 0; ; from += pageSize) {
+    let query = supabase
+      .from('lead_events')
+      .select('*, contact:contacts!lead_events_contact_id_fkey(*)')
+      .eq('project_id', projectId)
+      .order('occurred_at', { ascending: false })
+      .range(from, from + pageSize - 1);
+    if (range) query = query.gte('occurred_at', range.since).lte('occurred_at', `${range.until}T23:59:59`);
+    const { data, error } = await query;
+    if (error) throw error;
+    const rows = (data ?? []) as unknown as Array<LeadEventRow & { contact: ContactRow | null }>;
+    rows.forEach(({ contact, ...event }) => {
+      events.push(event);
+      if (contact) contacts.set(contact.id, contact);
+    });
+    if (rows.length < pageSize) break;
+  }
+
+  const missingContactIds = Array.from(new Set(events.map((event) => event.contact_id))).filter((id) => !contacts.has(id));
+  if (missingContactIds.length) {
+    const fallback = await listContactsByIds(missingContactIds);
+    fallback.forEach((contact) => contacts.set(contact.id, contact));
+  }
+  return { events, contacts: Array.from(contacts.values()) };
+}
+
 /** Busca eventos já vinculados às vendas, inclusive quando o lead ocorreu antes do período do painel. */
 export async function listLeadEventsByIds(ids: string[]): Promise<LeadEventRow[]> {
   const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
@@ -128,6 +166,41 @@ export async function listSales(
     if (!data || data.length < pageSize) break;
   }
   return rows;
+}
+
+/** Mesmo carregamento agregado para vendas, preservando campos do CSV. */
+export async function listSalesWithContacts(
+  projectId: string,
+  range?: { since: string; until: string }
+): Promise<{ sales: SaleRow[]; contacts: ContactRow[] }> {
+  const sales: SaleRow[] = [];
+  const contacts = new Map<string, ContactRow>();
+  const pageSize = 1000;
+
+  for (let from = 0; ; from += pageSize) {
+    let query = supabase
+      .from('sales')
+      .select('*, contact:contacts!sales_contact_id_fkey(*)')
+      .eq('project_id', projectId)
+      .order('sold_at', { ascending: false })
+      .range(from, from + pageSize - 1);
+    if (range) query = query.gte('sold_at', range.since).lte('sold_at', `${range.until}T23:59:59`);
+    const { data, error } = await query;
+    if (error) throw error;
+    const rows = (data ?? []) as unknown as Array<SaleRow & { contact: ContactRow | null }>;
+    rows.forEach(({ contact, ...sale }) => {
+      sales.push(sale);
+      if (contact) contacts.set(contact.id, contact);
+    });
+    if (rows.length < pageSize) break;
+  }
+
+  const missingContactIds = Array.from(new Set(sales.map((sale) => sale.contact_id))).filter((id) => !contacts.has(id));
+  if (missingContactIds.length) {
+    const fallback = await listContactsByIds(missingContactIds);
+    fallback.forEach((contact) => contacts.set(contact.id, contact));
+  }
+  return { sales, contacts: Array.from(contacts.values()) };
 }
 
 export async function listContactsByIds(ids: string[]): Promise<ContactRow[]> {

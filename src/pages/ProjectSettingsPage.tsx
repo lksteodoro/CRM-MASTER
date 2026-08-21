@@ -1,8 +1,6 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
-  Eye,
-  EyeOff,
-  Plug,
   RefreshCw,
   CheckCircle2,
   XCircle,
@@ -13,10 +11,9 @@ import {
   Check,
 } from 'lucide-react';
 import { useProject } from '../state/ProjectContext';
+import { useAuth } from '../providers/AuthProvider';
 import {
   getIntegration,
-  saveIntegration,
-  testConnection,
   syncInsights,
   syncEntities,
   listMetaCampaigns,
@@ -63,6 +60,7 @@ const statusLabel: Record<string, { label: string; className: string; icon: type
 
 export function ProjectSettingsPage() {
   const { project, permissions, reloadGoals } = useProject();
+  const { isAdmin } = useAuth();
 
   const [name, setName] = useState(project.name);
   const [projectStatus, setProjectStatus] = useState<ProjectStatus>(project.status);
@@ -78,18 +76,13 @@ export function ProjectSettingsPage() {
 
   const [integration, setIntegration] = useState<MetaIntegrationRow | null>(null);
   const [loading, setLoading] = useState(true);
-  const [adAccountId, setAdAccountId] = useState('');
-  const [accessToken, setAccessToken] = useState('');
-  const [showToken, setShowToken] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [feedback, setFeedback] = useState<{ type: 'ok' | 'error'; text: string } | null>(null);
   const [syncStartDate, setSyncStartDate] = useState(() => {
     const date = new Date();
     date.setFullYear(date.getFullYear() - 1);
     return fmt(date);
   });
-  const [feedback, setFeedback] = useState<{ type: 'ok' | 'error'; text: string } | null>(null);
 
   const [campaigns, setCampaigns] = useState<MetaCampaignSummary[] | null>(null);
   const [loadingCampaigns, setLoadingCampaigns] = useState(false);
@@ -112,8 +105,6 @@ export function ProjectSettingsPage() {
     try {
       const row = await getIntegration(project.id);
       setIntegration(row);
-      setAdAccountId(row?.ad_account_id ?? '');
-      setAccessToken(row?.access_token ?? '');
       setSelectedIds(new Set(row?.selected_campaign_ids ?? []));
     } finally {
       setLoading(false);
@@ -252,48 +243,6 @@ export function ProjectSettingsPage() {
     void navigator.clipboard.writeText(integrationRow.secret);
     setCopiedKey('secret');
     setTimeout(() => setCopiedKey(null), 2000);
-  }
-
-  async function handleSave() {
-    if (!adAccountId.trim() || !accessToken.trim()) {
-      setFeedback({ type: 'error', text: 'Preencha o ID da conta de anúncios e o token de acesso.' });
-      return;
-    }
-    setSaving(true);
-    setFeedback(null);
-    try {
-      const row = await saveIntegration(project.id, {
-        adAccountId,
-        accessToken,
-      });
-      setIntegration(row);
-      setFeedback({ type: 'ok', text: 'Credenciais salvas. Teste a conexão para validar.' });
-    } catch (e) {
-      setFeedback({ type: 'error', text: e instanceof Error ? e.message : 'Erro ao salvar.' });
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handleTest() {
-    setTesting(true);
-    setFeedback(null);
-    try {
-      const result = await testConnection(project.id);
-      if (result.ok) {
-        setFeedback({
-          type: 'ok',
-          text: `Conectado à conta "${result.accountName ?? adAccountId}" com sucesso.`,
-        });
-      } else {
-        setFeedback({ type: 'error', text: result.error ?? 'Falha ao conectar.' });
-      }
-      await reload();
-    } catch (e) {
-      setFeedback({ type: 'error', text: e instanceof Error ? e.message : 'Erro ao testar conexão.' });
-    } finally {
-      setTesting(false);
-    }
   }
 
   async function handleSync() {
@@ -518,59 +467,22 @@ export function ProjectSettingsPage() {
       >
         <div className="flex flex-col gap-4">
           <p className="text-xs text-[var(--color-text-muted)]">
-            O token de acesso fica salvo no banco e só é visível para administradores da agência.
-            As chamadas à Meta acontecem no servidor (Edge Function) — o token nunca sai do backend
-            depois de salvo.
+            As credenciais da Meta são administradas centralmente pela agência. Este projeto usa a
+            conexão definida em <strong className="text-[var(--color-text)]">Configurações → APIs</strong>.
           </p>
-
-          <label className="flex flex-col gap-1 text-xs text-[var(--color-text-muted)]">
-            ID da conta de anúncios
-            <input
-              type="text"
-              disabled={!canEdit}
-              value={adAccountId}
-              onChange={(e) => setAdAccountId(e.target.value)}
-              placeholder="act_1234567890 ou 1234567890"
-              className="rounded-lg border border-[var(--color-border)] bg-[var(--color-panel-2)] px-3 py-2 text-sm text-[var(--color-text)] disabled:opacity-60"
-            />
-          </label>
-
-          <label className="flex flex-col gap-1 text-xs text-[var(--color-text-muted)]">
-            Token de acesso (Meta Marketing API)
-            <div className="relative">
-              <input
-                type={showToken ? 'text' : 'password'}
-                disabled={!canEdit}
-                value={accessToken}
-                onChange={(e) => setAccessToken(e.target.value)}
-                placeholder="EAAB..."
-                className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-panel-2)] px-3 py-2 pr-9 text-sm text-[var(--color-text)] disabled:opacity-60"
-              />
-              <button
-                type="button"
-                onClick={() => setShowToken((v) => !v)}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--color-text-faint)] hover:text-[var(--color-text)]"
-              >
-                {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
-              </button>
-            </div>
-            <span className="text-[10px] text-[var(--color-text-faint)]">
-              Gere um token de sistema (long-lived) com permissão <code>ads_read</code> no{' '}
-              <span className="text-[var(--color-text)]">Business Manager</span> da Meta.
-            </span>
-          </label>
-
-          {feedback && (
-            <p
-              className={`text-xs ${feedback.type === 'ok' ? 'text-[var(--color-good)]' : 'text-[var(--color-bad)]'}`}
-            >
-              {feedback.text}
-            </p>
-          )}
+          {isAdmin && <Link to="/agency/configuracoes?aba=apis" className="inline-flex w-fit rounded-lg border border-[var(--color-brand)]/45 bg-[var(--color-brand-soft)] px-3 py-2 text-xs font-semibold text-[var(--color-brand)] hover:brightness-110">
+            Gerenciar APIs da agência
+          </Link>}
 
           {integration?.last_synced_at && (
             <p className="text-[11px] text-[var(--color-text-faint)]">
               Última sincronização: {new Date(integration.last_synced_at).toLocaleString('pt-BR')}
+            </p>
+          )}
+
+          {feedback && (
+            <p className={`text-xs ${feedback.type === 'ok' ? 'text-[var(--color-good)]' : 'text-[var(--color-bad)]'}`}>
+              {feedback.text}
             </p>
           )}
 
@@ -582,21 +494,6 @@ export function ProjectSettingsPage() {
                 <span className="pb-2 text-[11px] text-[var(--color-text-faint)]">Até hoje: {fmt(new Date())}. A busca é feita em blocos de 30 dias.</span>
               </div>
               <div className="flex flex-wrap gap-2">
-              <button
-                onClick={handleSave}
-                disabled={saving}
-                className="rounded-lg bg-[var(--color-brand)] px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-60"
-              >
-                {saving ? 'Salvando...' : 'Salvar credenciais'}
-              </button>
-              <button
-                onClick={handleTest}
-                disabled={testing || !integration}
-                className="flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm text-[var(--color-text)] hover:border-[var(--color-brand)] disabled:opacity-50"
-              >
-                <Plug size={14} />
-                {testing ? 'Testando...' : 'Testar conexão'}
-              </button>
               <button
                 onClick={handleSync}
                 disabled={syncing || integration?.status !== 'CONNECTED'}
