@@ -89,8 +89,94 @@ Deno.serve(async (request) => {
   const user = userData.user;
   const { data: profile } = user ? await caller.from('profiles').select('organization_id, role').eq('id', user.id).maybeSingle() : { data: null };
   if (!user || profile?.role !== 'ADMIN' || !profile.organization_id) return json({ error: 'forbidden' }, 403);
-  const state = crypto.randomUUID();
+
   const admin = createClient(supabaseUrl, serviceKey);
+  const body = await request.json().catch(() => ({} as Record<string, unknown>));
+  const action = String(body.action ?? 'start');
+
+  // ── Token de usuário de sistema ───────────────────────────────────────────
+  // Alternativa ao login do Facebook para quem prefere uma credencial fixa da
+  // Business Manager. O token chega uma única vez, é validado contra a Meta e
+  // vai direto para o cofre no servidor — nunca é devolvido ao navegador.
+  if (action === 'save_token') {
+    const submitted = String(body.token ?? '').trim();
+    if (!submitted) return json({ error: 'Informe o token de acesso.' }, 400);
+
+    const debugResponse = await fetch(
+      `https://graph.facebook.com/v24.0/debug_token?input_token=${encodeURIComponent(submitted)}&access_token=${encodeURIComponent(`${appId}|${appSecret}`)}`,
+    ).then((response) => response.json()).catch(() => null);
+    const info = debugResponse?.data;
+
+    if (!info || debugResponse?.error) {
+      return json({ error: debugResponse?.error?.message ?? 'A Meta não reconheceu este token.' }, 400);
+    }
+    if (!info.is_valid) {
+      return json({ error: 'Este token está expirado ou foi revogado na Meta.' }, 400);
+    }
+    // A checagem que separa uma credencial legítima de uma violação: o token
+    // precisa ter sido emitido para ESTE aplicativo. Um token do Graph API
+    // Explorer, ou de qualquer outro app, pertence ao app que o emitiu — usá-lo
+    // aqui seria uso de credencial de terceiro, proibido pelas Platform Terms.
+    if (String(info.app_id) !== String(appId)) {
+      return json({
+        error: 'Este token foi emitido para outro aplicativo da Meta e não pode ser usado aqui. Gere um token de usuário de sistema na sua Business Manager selecionando o aplicativo desta agência (Configurações do Negócio › Usuários do sistema › Gerar novo token).',
+      }, 400);
+    }
+    const grantedScopes: string[] = info.scopes ?? [];
+    if (!grantedScopes.includes('ads_management')) {
+      return json({
+        error: `Este token não tem a permissão ads_management, necessária para publicar anúncios. Permissões encontradas: ${grantedScopes.join(', ') || 'nenhuma'}.`,
+      }, 400);
+    }
+
+    const profileData = await fetch(
+      `https://graph.facebook.com/v24.0/me?fields=id,name&access_token=${encodeURIComponent(submitted)}`,
+    ).then((response) => response.json()).catch(() => ({}));
+
+    const { data: connection, error: connectionError } = await admin.from('meta_oauth_connections').upsert({
+      organization_id: profile.organization_id,
+      meta_user_id: profileData.id ?? String(info.user_id ?? '') ?? null,
+      meta_user_name: profileData.name ?? 'Usuário de sistema',
+      scopes: grantedScopes,
+      status: 'CONNECTED',
+      // Token de usuário de sistema costuma não expirar: expires_at 0 ou ausente.
+      expires_at: info.expires_at ? new Date(Number(info.expires_at) * 1000).toISOString() : null,
+      last_error: null,
+      credential_source: 'SYSTEM_USER',
+      connected_by: user.id,
+      connected_at: new Date().toISOString(),
+      verified_at: new Date().toISOString(),
+    }, { onConflict: 'organization_id' }).select('id').single();
+    if (connectionError || !connection) return json({ error: connectionError?.message ?? 'Não foi possível salvar a conexão.' }, 400);
+
+    const { error: secretError } = await admin.rpc('meta_oauth_secret_set', { p_connection_id: connection.id, p_access_token: submitted });
+    if (secretError) return json({ error: 'A conexão foi criada, mas não foi possível guardar a credencial.' }, 400);
+
+    return json({
+      ok: true,
+      name: profileData.name ?? 'Usuário de sistema',
+      scopes: grantedScopes,
+      expires_at: info.expires_at ? new Date(Number(info.expires_at) * 1000).toISOString() : null,
+    });
+  }
+
+  // ── Desconectar ───────────────────────────────────────────────────────────
+  if (action === 'disconnect') {
+    const { data: connection } = await admin
+      .from('meta_oauth_connections')
+      .select('id')
+      .eq('organization_id', profile.organization_id)
+      .maybeSingle();
+    if (connection) {
+      await admin.rpc('meta_oauth_secret_set', { p_connection_id: connection.id, p_access_token: '' });
+      await admin.from('meta_oauth_connections')
+        .update({ status: 'REVOKED', last_error: 'Conexão removida por um administrador.' })
+        .eq('id', connection.id);
+    }
+    return json({ ok: true });
+  }
+
+  const state = crypto.randomUUID();
   const { error } = await admin.rpc('meta_oauth_state_create', {
     p_state: state,
     p_organization_id: profile.organization_id,

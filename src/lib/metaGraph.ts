@@ -266,7 +266,21 @@ export async function getMetaConnectionState(): Promise<MetaConnectionState> {
     .select('meta_user_name, status, last_error')
     .maybeSingle();
 
-  if (error || !data) {
+  if (error) {
+    // Tabela ausente significa que a migration da integração ainda não foi
+    // aplicada no banco. Sem distinguir isso, o operador vê "não conectado" e
+    // fica tentando conectar numa tela que ainda não existe do outro lado.
+    const missingTable = error.code === '42P01' || error.code === 'PGRST205' || /does not exist|schema cache/i.test(error.message ?? '');
+    return {
+      connected: false,
+      name: null,
+      status: null,
+      message: missingTable
+        ? 'A integração da Meta ainda não foi instalada neste ambiente: falta aplicar as migrations e publicar as Edge Functions.'
+        : error.message ?? null,
+    };
+  }
+  if (!data) {
     return { connected: false, name: null, status: null, message: null };
   }
   return {

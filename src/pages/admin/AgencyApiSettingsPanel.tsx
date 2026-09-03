@@ -4,7 +4,7 @@ import { listProjects } from '../../services/projects.service';
 import type { ProjectRow } from '../../integrations/supabase/database.types';
 import { getIntegration, saveIntegration, testConnection } from '../../services/metaAds.service';
 import { getInfobipApiConfig, saveInfobipApiConfig, testInfobipApiConfig } from '../../services/infobipTemplates.service';
-import { getMetaOAuthConnection, startMetaOAuth, type MetaOAuthConnection } from '../../services/metaOAuth.service';
+import { disconnectMeta, getMetaOAuthConnection, saveMetaSystemUserToken, startMetaOAuth, type MetaOAuthConnection } from '../../services/metaOAuth.service';
 
 type ApiId = 'infobip' | 'meta' | 'supabase';
 type Feedback = { type: 'ok' | 'error'; text: string } | null;
@@ -52,7 +52,7 @@ export function AgencyApiSettingsPanel() {
       </div>
 
       {selectedApi === 'infobip' && <InfobipApiModal onClose={() => setSelectedApi(null)} onConfigured={() => setInfobipConfigured(true)} />}
-      {selectedApi === 'meta' && <MetaApiModal connection={metaConnection} projects={projects} onClose={() => setSelectedApi(null)} />}
+      {selectedApi === 'meta' && <MetaApiModal connection={metaConnection} projects={projects} onChanged={setMetaConnection} onClose={() => setSelectedApi(null)} />}
     </section>
   );
 }
@@ -90,24 +90,69 @@ function InfobipApiModal({ onClose, onConfigured }: { onClose: () => void; onCon
   return <ModalShell title="Configurar API Infobip" description="A chave fica armazenada no servidor e não é exibida novamente." onClose={onClose}><div className="px-6 py-5"><label className="block text-xs font-semibold text-[var(--color-text-muted)]">Base URL<input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://xxxx.api.infobip.com" className="mt-1.5 w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-panel-2)] px-3 py-2.5 text-sm text-[var(--color-text)] outline-none focus:border-[var(--color-brand)]" /></label><label className="mt-4 block text-xs font-semibold text-[var(--color-text-muted)]">API Key<input value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" placeholder="Cole uma nova chave para alterar" className="mt-1.5 w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-panel-2)] px-3 py-2.5 text-sm text-[var(--color-text)] outline-none focus:border-[var(--color-brand)]" /></label><FeedbackMessage feedback={feedback} /></div><footer className="flex justify-end gap-2 border-t border-[var(--color-border)] px-6 py-4"><button type="button" disabled={busy} onClick={() => void test()} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-muted)] hover:text-[var(--color-text)]">Testar conexão</button><button type="button" disabled={busy || !baseUrl || !apiKey} onClick={() => void save()} className="inline-flex items-center gap-2 rounded-lg bg-[var(--color-brand)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{busy && <Loader2 size={15} className="animate-spin" />}<Save size={15} /> Salvar</button></footer></ModalShell>;
 }
 
-function MetaApiModal({ connection, projects, onClose }: { connection: MetaOAuthConnection | null; projects: ProjectRow[]; onClose: () => void }) {
-  const [mode, setMode] = useState<'oauth' | 'token'>('oauth');
+/**
+ * Conexão da agência com a Meta.
+ *
+ * Duas formas de conectar, ambas aceitas pela Meta e ambas guardando a
+ * credencial no servidor:
+ *
+ *   OAuth          — login do Facebook. Bom quando quem opera é a própria
+ *                    pessoa dona dos acessos.
+ *   Token geral    — usuário de sistema da Business Manager. Credencial fixa,
+ *                    que não expira e não depende de ninguém continuar logado.
+ *
+ * A terceira aba é outra coisa: token por projeto, usado só para ler métricas.
+ * Ele não publica anúncios.
+ */
+function MetaApiModal({ connection, projects, onClose, onChanged }: { connection: MetaOAuthConnection | null; projects: ProjectRow[]; onClose: () => void; onChanged: (connection: MetaOAuthConnection | null) => void }) {
+  const [mode, setMode] = useState<'oauth' | 'system' | 'project'>(connection?.credential_source === 'SYSTEM_USER' ? 'system' : 'oauth');
   const [projectId, setProjectId] = useState('');
   const [accountId, setAccountId] = useState('');
   const [token, setToken] = useState('');
+  const [systemToken, setSystemToken] = useState('');
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const selectedProject = useMemo(() => projects.find((project) => project.id === projectId) ?? null, [projects, projectId]);
+  const isConnected = connection?.status === 'CONNECTED';
 
   useEffect(() => {
-    if (!projectId || mode !== 'token') return;
+    if (!projectId || mode !== 'project') return;
     void getIntegration(projectId).then((integration) => setAccountId(integration?.ad_account_id ?? '')).catch(() => setAccountId(''));
   }, [mode, projectId]);
+
+  async function refreshConnection() {
+    try { onChanged(await getMetaOAuthConnection()); } catch { /* a tela recarrega no próximo acesso */ }
+  }
+
   async function connect() {
     setBusy(true); setFeedback(null);
     try { window.location.assign(await startMetaOAuth()); }
     catch (error) { setFeedback({ type: 'error', text: error instanceof Error ? error.message : 'Não foi possível iniciar o login da Meta.' }); }
     finally { setBusy(false); }
+  }
+
+  async function saveSystemToken() {
+    if (!systemToken.trim()) return;
+    setBusy(true); setFeedback(null);
+    try {
+      const saved = await saveMetaSystemUserToken(systemToken.trim());
+      setSystemToken('');
+      await refreshConnection();
+      setFeedback({ type: 'ok', text: `Credencial validada e guardada no servidor (${saved.name}). Permissões: ${saved.scopes.join(', ')}.` });
+    } catch (error) {
+      setFeedback({ type: 'error', text: error instanceof Error ? error.message : 'Não foi possível salvar o token.' });
+    } finally { setBusy(false); }
+  }
+
+  async function removeConnection() {
+    setBusy(true); setFeedback(null);
+    try {
+      await disconnectMeta();
+      await refreshConnection();
+      setFeedback({ type: 'ok', text: 'Conexão removida. A credencial foi apagada do servidor.' });
+    } catch (error) {
+      setFeedback({ type: 'error', text: error instanceof Error ? error.message : 'Não foi possível remover a conexão.' });
+    } finally { setBusy(false); }
   }
 
   async function saveToken() {
@@ -133,5 +178,134 @@ function MetaApiModal({ connection, projects, onClose }: { connection: MetaOAuth
     } finally { setBusy(false); }
   }
 
-  return <ModalShell title="Conectar Meta Ads" description="Escolha OAuth para a conexão da agência ou token manual por projeto." onClose={onClose}><div className="px-6 py-5"><div className="mb-5 grid grid-cols-2 gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-panel-2)] p-1"><button type="button" onClick={() => { setMode('oauth'); setFeedback(null); }} className={`rounded-lg px-3 py-2 text-sm font-semibold ${mode === 'oauth' ? 'bg-[var(--color-brand)] text-white' : 'text-[var(--color-text-muted)]'}`}>OAuth da agência</button><button type="button" onClick={() => { setMode('token'); setFeedback(null); }} className={`rounded-lg px-3 py-2 text-sm font-semibold ${mode === 'token' ? 'bg-[var(--color-brand)] text-white' : 'text-[var(--color-text-muted)]'}`}>Token por projeto</button></div>{mode === 'oauth' ? <div className="space-y-4">{connection?.status === 'CONNECTED' ? <div className="rounded-xl border border-emerald-400/25 bg-emerald-400/10 p-4 text-sm text-emerald-200"><p className="font-semibold">Meta conectada{connection.meta_user_name ? ` como ${connection.meta_user_name}` : ''}.</p><p className="mt-1 text-xs text-emerald-100/70">Funcionários usam os perfis liberados e nunca visualizam a credencial.</p></div> : <div className="rounded-xl border border-amber-400/25 bg-amber-400/10 p-4 text-sm text-amber-100"><p className="font-semibold">Nenhuma conexão OAuth ativa.</p><p className="mt-1 text-xs text-amber-100/70">Entre na Meta, autorize a agência e deixe a conexão salva no servidor.</p></div>}<p className="text-xs leading-5 text-[var(--color-text-muted)]">Recomendado para a operação compartilhada da agência.</p></div> : <div className="space-y-4"><p className="text-xs leading-5 text-[var(--color-text-muted)]">Use somente para uma conta/projeto específico ou enquanto OAuth não estiver configurado. O token não é exibido novamente após salvar.</p><label className="block text-xs font-semibold text-[var(--color-text-muted)]">Projeto<select value={projectId} onChange={(event) => setProjectId(event.target.value)} className="mt-1.5 w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-panel-2)] px-3 py-2.5 text-sm text-[var(--color-text)] outline-none focus:border-[var(--color-brand)]"><option value="">Selecione o projeto</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><label className="block text-xs font-semibold text-[var(--color-text-muted)]">ID da conta de anúncios<input value={accountId} onChange={(event) => setAccountId(event.target.value)} placeholder="act_123456789 ou 123456789" className="mt-1.5 w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-panel-2)] px-3 py-2.5 text-sm text-[var(--color-text)] outline-none focus:border-[var(--color-brand)]" /></label><label className="block text-xs font-semibold text-[var(--color-text-muted)]">Token de acesso Meta<input value={token} onChange={(event) => setToken(event.target.value)} type="password" placeholder="Cole apenas para salvar ou substituir" className="mt-1.5 w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-panel-2)] px-3 py-2.5 text-sm text-[var(--color-text)] outline-none focus:border-[var(--color-brand)]" /></label>{selectedProject && <p className="text-xs text-[var(--color-text-faint)]">Esta credencial será usada somente em {selectedProject.name}.</p>}</div>}<FeedbackMessage feedback={feedback} /></div><footer className="flex justify-end gap-2 border-t border-[var(--color-border)] px-6 py-4"><button type="button" onClick={onClose} className="rounded-lg px-3 py-2 text-sm text-[var(--color-text-muted)]">Fechar</button>{mode === 'oauth' ? <button type="button" disabled={busy} onClick={() => void connect()} className="inline-flex items-center gap-2 rounded-lg bg-[var(--color-brand)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{busy && <Loader2 size={15} className="animate-spin" />}<KeyRound size={15} /> {connection ? 'Reconectar Meta' : 'Conectar com Meta'}</button> : <><button type="button" disabled={busy || !projectId} onClick={() => void testToken()} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-muted)] disabled:opacity-50">Testar</button><button type="button" disabled={busy || !projectId || !accountId || !token} onClick={() => void saveToken()} className="inline-flex items-center gap-2 rounded-lg bg-[var(--color-brand)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{busy && <Loader2 size={15} className="animate-spin" />}<Save size={15} /> Salvar token</button></>}</footer></ModalShell>;
+  const tabClass = (active: boolean) => `rounded-lg px-3 py-2 text-xs font-semibold transition ${active ? 'bg-[var(--color-brand)] text-white' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]'}`;
+  const fieldClass = 'mt-1.5 w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-panel-2)] px-3 py-2.5 text-sm text-[var(--color-text)] outline-none focus:border-[var(--color-brand)]';
+
+  return (
+    <ModalShell title="Conectar Meta Ads" description="A credencial fica no servidor. Nenhuma das opções guarda token no navegador." onClose={onClose}>
+      <div className="max-h-[65vh] overflow-y-auto px-6 py-5">
+        {/* Estado atual da credencial que publica anúncios */}
+        <div className={`mb-5 rounded-xl border p-4 text-sm ${isConnected ? 'border-emerald-400/25 bg-emerald-400/10 text-emerald-200' : 'border-amber-400/25 bg-amber-400/10 text-amber-100'}`}>
+          <p className="font-semibold">
+            {isConnected
+              ? `Conectada${connection?.meta_user_name ? ` como ${connection.meta_user_name}` : ''} · ${connection?.credential_source === 'SYSTEM_USER' ? 'token geral da agência' : 'OAuth'}`
+              : 'Nenhuma credencial da agência ativa'}
+          </p>
+          <p className="mt-1 text-xs opacity-80">
+            {isConnected
+              ? 'O criador de anúncios usa esta conexão. Funcionários publicam sem nunca ver a credencial.'
+              : 'Enquanto isso, o criador de anúncios abre em modo demonstração e não publica. Escolha uma das duas formas abaixo.'}
+          </p>
+          {connection?.last_error && <p className="mt-2 text-xs opacity-90">Último erro: {connection.last_error}</p>}
+          {isConnected && connection?.scopes?.length ? <p className="mt-2 text-[11px] opacity-70">Permissões: {connection.scopes.join(', ')}</p> : null}
+        </div>
+
+        <div className="mb-5 grid grid-cols-3 gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-panel-2)] p-1">
+          <button type="button" onClick={() => { setMode('oauth'); setFeedback(null); }} className={tabClass(mode === 'oauth')}>Login da Meta</button>
+          <button type="button" onClick={() => { setMode('system'); setFeedback(null); }} className={tabClass(mode === 'system')}>Token geral</button>
+          <button type="button" onClick={() => { setMode('project'); setFeedback(null); }} className={tabClass(mode === 'project')}>Token por projeto</button>
+        </div>
+
+        {mode === 'oauth' && (
+          <div className="space-y-3">
+            <p className="text-xs leading-5 text-[var(--color-text-muted)]">
+              Você entra na Meta, autoriza a agência e a credencial fica guardada no servidor. É o caminho mais simples quando quem configura já tem acesso à Business Manager, à conta de anúncios e às páginas.
+            </p>
+            <p className="text-xs leading-5 text-[var(--color-text-faint)]">
+              O token gerado assim tem validade e pode exigir reconexão de tempos em tempos. Se preferir uma credencial que não expira, use a aba <strong className="text-[var(--color-text-muted)]">Token geral</strong>.
+            </p>
+          </div>
+        )}
+
+        {mode === 'system' && (
+          <div className="space-y-4">
+            <p className="text-xs leading-5 text-[var(--color-text-muted)]">
+              Credencial fixa da agência, gerada como <strong className="text-[var(--color-text)]">usuário de sistema</strong> na sua Business Manager. É o mecanismo oficial da Meta para integração servidor-a-servidor: não expira e não depende de ninguém continuar logado.
+            </p>
+
+            <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-panel-2)] p-4">
+              <p className="text-xs font-semibold text-[var(--color-text)]">Como gerar o token</p>
+              <ol className="mt-2 space-y-1.5 text-xs leading-5 text-[var(--color-text-muted)]">
+                <li>1. Abra <strong className="text-[var(--color-text-muted)]">business.facebook.com</strong> › Configurações do Negócio › Usuários do sistema.</li>
+                <li>2. Crie (ou escolha) um usuário de sistema com função de administrador e dê a ele acesso à conta de anúncios e às páginas.</li>
+                <li>3. Clique em <strong className="text-[var(--color-text-muted)]">Gerar novo token</strong> e escolha <strong className="text-[var(--color-text-muted)]">o aplicativo desta agência</strong> — não outro.</li>
+                <li>4. Marque as permissões <code className="rounded bg-[var(--color-panel)] px-1">ads_management</code>, <code className="rounded bg-[var(--color-panel)] px-1">ads_read</code>, <code className="rounded bg-[var(--color-panel)] px-1">pages_show_list</code> e <code className="rounded bg-[var(--color-panel)] px-1">business_management</code>.</li>
+              </ol>
+              <p className="mt-3 text-[11px] leading-5 text-[var(--color-text-faint)]">
+                O token é conferido com a Meta antes de ser aceito. Se tiver sido gerado para outro aplicativo — o caso mais comum é o token do Graph API Explorer — ele é recusado: usar credencial de outro app viola as regras da plataforma e é o tipo de coisa que derruba a conta.
+              </p>
+            </div>
+
+            <label className="block text-xs font-semibold text-[var(--color-text-muted)]">
+              Token de usuário de sistema
+              <input
+                value={systemToken}
+                onChange={(event) => setSystemToken(event.target.value)}
+                type="password"
+                autoComplete="off"
+                placeholder="Cole o token aqui — ele não será exibido novamente"
+                className={fieldClass}
+              />
+            </label>
+            <p className="text-[11px] leading-5 text-[var(--color-text-faint)]">
+              O token vai direto para o cofre do servidor e não fica salvo neste navegador.
+            </p>
+          </div>
+        )}
+
+        {mode === 'project' && (
+          <div className="space-y-4">
+            <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-panel-2)] p-3">
+              <p className="text-xs leading-5 text-[var(--color-text-muted)]">
+                Esta aba é só para <strong className="text-[var(--color-text)]">leitura de métricas</strong> de um projeto específico. Ela não publica anúncios — para publicar, use uma das duas primeiras abas.
+              </p>
+            </div>
+            <label className="block text-xs font-semibold text-[var(--color-text-muted)]">
+              Projeto
+              <select value={projectId} onChange={(event) => setProjectId(event.target.value)} className={fieldClass}>
+                <option value="">Selecione o projeto</option>
+                {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+              </select>
+            </label>
+            <label className="block text-xs font-semibold text-[var(--color-text-muted)]">
+              ID da conta de anúncios
+              <input value={accountId} onChange={(event) => setAccountId(event.target.value)} placeholder="act_123456789 ou 123456789" className={fieldClass} />
+            </label>
+            <label className="block text-xs font-semibold text-[var(--color-text-muted)]">
+              Token de acesso Meta
+              <input value={token} onChange={(event) => setToken(event.target.value)} type="password" placeholder="Cole apenas para salvar ou substituir" className={fieldClass} />
+            </label>
+            {selectedProject && <p className="text-xs text-[var(--color-text-faint)]">Esta credencial será usada somente em {selectedProject.name}.</p>}
+          </div>
+        )}
+
+        <FeedbackMessage feedback={feedback} />
+      </div>
+
+      <footer className="flex flex-wrap justify-end gap-2 border-t border-[var(--color-border)] px-6 py-4">
+        {isConnected && mode !== 'project' && (
+          <button type="button" disabled={busy} onClick={() => void removeConnection()} className="mr-auto rounded-lg border border-red-500/30 px-3 py-2 text-sm text-red-300 hover:bg-red-500/10 disabled:opacity-50">Desconectar</button>
+        )}
+        <button type="button" onClick={onClose} className="rounded-lg px-3 py-2 text-sm text-[var(--color-text-muted)]">Fechar</button>
+        {mode === 'oauth' && (
+          <button type="button" disabled={busy} onClick={() => void connect()} className="inline-flex items-center gap-2 rounded-lg bg-[var(--color-brand)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
+            {busy && <Loader2 size={15} className="animate-spin" />}<KeyRound size={15} /> {connection ? 'Reconectar Meta' : 'Conectar com Meta'}
+          </button>
+        )}
+        {mode === 'system' && (
+          <button type="button" disabled={busy || !systemToken.trim()} onClick={() => void saveSystemToken()} className="inline-flex items-center gap-2 rounded-lg bg-[var(--color-brand)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
+            {busy && <Loader2 size={15} className="animate-spin" />}<ShieldCheck size={15} /> Validar e salvar
+          </button>
+        )}
+        {mode === 'project' && (
+          <>
+            <button type="button" disabled={busy || !projectId} onClick={() => void testToken()} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-muted)] disabled:opacity-50">Testar</button>
+            <button type="button" disabled={busy || !projectId || !accountId || !token} onClick={() => void saveToken()} className="inline-flex items-center gap-2 rounded-lg bg-[var(--color-brand)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
+              {busy && <Loader2 size={15} className="animate-spin" />}<Save size={15} /> Salvar token
+            </button>
+          </>
+        )}
+      </footer>
+    </ModalShell>
+  );
 }

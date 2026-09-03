@@ -2101,7 +2101,9 @@ ${rows.map(r => `<tr>
           <div style={{ padding: '10px 24px', background: 'rgba(245,158,11,0.07)', borderBottom: '1px solid rgba(245,158,11,0.2)', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Info size={14} color="#f59e0b" />
             <span style={{ fontSize: '12px', color: '#f59e0b', fontWeight: '600' }}>
-              Modo demonstração — a agência ainda não está conectada à Meta. Um administrador precisa conectar em <strong>Configurações › APIs</strong>.
+              {connection.message
+                ? <>Modo demonstração — {connection.message}</>
+                : <>Modo demonstração — a agência ainda não está conectada à Meta. Um administrador precisa conectar em <strong>Configurações › APIs › Meta Ads</strong>, com login da Meta ou token geral da agência. O token por projeto serve só para métricas e não publica.</>}
             </span>
           </div>
         )}

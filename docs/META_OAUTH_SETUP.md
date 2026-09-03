@@ -100,3 +100,43 @@ Meta trata isso como cloaking. O criador bloqueia esses links no campo de
 destino. Se for realmente necessário usar um, marque a opção **"Este link será
 usado como destino de anúncio pago"** ao criá-lo: o link passa a aceitar um
 único destino, que não pode mais ser alterado.
+
+## 10. Duas formas de conectar a agência
+
+Ambas guardam a credencial no cofre do servidor e são aceitas pela Meta. A
+escolha é operacional, não de conformidade.
+
+| | Login da Meta (OAuth) | Token geral (usuário de sistema) |
+|---|---|---|
+| Como conecta | Botão "Conectar com Meta" | Token colado uma vez, validado na hora |
+| Validade | Expira e pede reconexão | Não expira |
+| Depende de | A pessoa que autorizou continuar com acesso | Nada além do usuário de sistema existir |
+| Onde fica | `private.meta_oauth_secrets` | `private.meta_oauth_secrets` |
+
+### Gerando o token geral
+
+1. `business.facebook.com` › Configurações do Negócio › **Usuários do sistema**.
+2. Crie um usuário de sistema administrador e dê a ele acesso à conta de
+   anúncios e às páginas que serão usadas.
+3. **Gerar novo token** › selecione **o aplicativo desta agência**.
+4. Marque `ads_management`, `ads_read`, `pages_show_list` e
+   `business_management`.
+5. Cole em Configurações › APIs › Meta Ads › aba **Token geral**.
+
+O sistema chama `debug_token` antes de aceitar e recusa o token se:
+
+- ele tiver sido emitido para **outro aplicativo** — o caso mais comum é o token
+  do Graph API Explorer. Token de outro app pertence a esse app, e usá-lo aqui é
+  uso de credencial de terceiro, proibido pelas Platform Terms;
+- estiver expirado ou revogado;
+- faltar a permissão `ads_management`.
+
+Colar token não é o problema — o problema seria guardá-lo no navegador ou pegá-lo
+emprestado de outro aplicativo. Nenhuma das duas coisas acontece aqui.
+
+### O que a aba "Token por projeto" faz
+
+Nada relacionado a publicar. Ela alimenta a leitura de métricas de um projeto
+específico (`meta_integrations`). Se só ela estiver configurada, o criador de
+anúncios continua em modo demonstração — é preciso conectar a agência por uma
+das duas formas acima.
