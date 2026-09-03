@@ -104,7 +104,7 @@ const CTA_OPTIONS = [
   { value: 'WATCH_MORE', label: 'Ver Mais' },
 ];
 
-const DEFAULT_UTM = '?utm_campaign=trafego&utm_source=[TD-PAGO]-facebookads-{{placement}}&utm_medium={{campaign.name}}&utm_content={{adset.name}}&utm_term={{ad.name}}&campaign-id={{campaign.id}}&adset-id={{adset.id}}&ad-id={{ad.id}}';
+const DEFAULT_UTM = '?utm_campaign={{campaign.name}}&utm_source={{placement}}&utm_medium={{adset.name}}&utm_content={{ad.name}}';
 
 const OBJECTIVE_ADSET_CONFIG = {
   OUTCOME_TRAFFIC:    { optimization_goal: 'LINK_CLICKS',         destination_type: 'WEBSITE', needs_pixel: false, valid_goals: ['LINK_CLICKS', 'LANDING_PAGE_VIEWS'] },
