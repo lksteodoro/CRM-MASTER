@@ -1053,7 +1053,10 @@ ${rows.map(r => `<tr>
     namingPattern: 'AD{index}_{date}', // {date} = DDMM dinamico na hora de publicar
     primaryText: card.demandaDescricao || '',
     description: '',
-    title: card.title || '',
+    // O título é escrito por quem cria o anúncio. Herdar o nome do projeto
+    // fazia a headline nascer com o nome do cliente — que raramente é o texto
+    // que deve aparecer no anúncio.
+    title: '',
     cta: 'LEARN_MORE',
     link: card.linkComplete || '',
     utmTags: DEFAULT_UTM,
