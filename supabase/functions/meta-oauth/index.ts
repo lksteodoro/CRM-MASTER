@@ -72,7 +72,8 @@ Deno.serve(async (request) => {
 
     const { data: connection, error: connectionError } = await admin.from('meta_oauth_connections').upsert({
       organization_id: pending.organization_id, meta_user_id: profileData.id ?? null, meta_user_name: profileData.name ?? null,
-      scopes: grantedScopes, status: 'CONNECTED', expires_at: expiresAt, last_error: null, connected_by: pending.user_id, connected_at: new Date().toISOString(),
+      scopes: grantedScopes, status: 'CONNECTED', expires_at: expiresAt, last_error: null, credential_source: 'OAUTH',
+      connected_by: pending.user_id, connected_at: new Date().toISOString(), verified_at: new Date().toISOString(),
     }, { onConflict: 'organization_id' }).select('id').single();
     if (connectionError || !connection) return fail(connectionError?.message ?? 'Não foi possível salvar a conexão.');
     const { error: secretError } = await admin.rpc('meta_oauth_secret_set', { p_connection_id: connection.id, p_access_token: accessToken });
@@ -81,7 +82,7 @@ Deno.serve(async (request) => {
   }
 
   if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
-  if (!appId || !appSecret) return json({ error: 'Meta OAuth não configurado no servidor.' }, 503);
+  if (!appId || !appSecret) return json({ error: 'Meta OAuth não configurado no servidor. Cadastre META_APP_ID e META_APP_SECRET nos segredos da função.' }, 503);
   const authHeader = request.headers.get('Authorization');
   if (!authHeader) return json({ error: 'missing_authorization' }, 401);
   const caller = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: authHeader } } });
