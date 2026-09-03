@@ -191,7 +191,7 @@ create table if not exists public.agency_tool_permissions (
   tool_key text not null check (tool_key in (
     'disparo.dashboard', 'disparo.redirects', 'disparo.templates',
     'disparo.broadcasts', 'disparo.request', 'disparo.demands',
-    'disparo.sanitizer', 'disparo.report', 'meta_ads'
+    'disparo.sanitizer', 'disparo.report', 'meta_ads', 'zpl_pdf'
   )),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -227,7 +227,7 @@ declare
   v_org_id uuid := private.current_organization_id();
   v_allowed_keys constant text[] := array[
     'disparo.dashboard', 'disparo.redirects', 'disparo.templates', 'disparo.broadcasts',
-    'disparo.request', 'disparo.demands', 'disparo.sanitizer', 'disparo.report', 'meta_ads'
+    'disparo.request', 'disparo.demands', 'disparo.sanitizer', 'disparo.report', 'meta_ads', 'zpl_pdf'
   ];
 begin
   if not private.is_admin() then raise exception 'forbidden'; end if;

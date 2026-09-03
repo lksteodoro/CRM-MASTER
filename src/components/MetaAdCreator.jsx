@@ -2,6 +2,25 @@ import { useState, useEffect, useRef } from 'react';
 import { X, UploadCloud, PlayCircle, Loader2, AlertCircle, CheckCircle, Database, Info, ChevronDown, Clock, Download, Trash2, Settings, RotateCcw } from 'lucide-react';
 import ffmpegCoreURL from '@ffmpeg/core?url';
 import ffmpegWasmURL from '@ffmpeg/core/wasm?url';
+import {
+  metaGet,
+  metaGetAll,
+  metaPost,
+  metaBatch,
+  buildBatchItem,
+  metaUploadImage,
+  metaUploadVideo,
+  waitForVideoReady,
+  getMetaConnectionState,
+  MetaNotConnectedError,
+} from '../lib/metaGraph';
+import {
+  SPECIAL_AD_CATEGORIES,
+  CATEGORIES_REQUIRING_AUTHORIZATION,
+  serializeSpecialAdCategories,
+  specialAdCategoryLabel,
+  validateDestinationUrl,
+} from '../lib/metaCompliance';
 // O módulo foi importado do CRM VENZA. Clientes e credenciais serão ligados
 // aos dados reais deste CRM na próxima etapa de integração.
 const CLIENTS = [];
@@ -9,7 +28,6 @@ const uuidv4 = () => crypto.randomUUID();
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-const META_API = 'https://graph.facebook.com/v25.0';
 const normalizeAdAccountId = (value) => {
   const digits = String(value || '').trim().replace(/^act_/i, '').replace(/\D/g, '');
   return digits ? `act_${digits}` : '';
@@ -219,8 +237,11 @@ const MetaAdCreator = ({ card, onClose, onComplete, projectId, quickPreset = nul
   const [rawMetaError, setRawMetaError] = useState('');
   const [progress, setProgress] = useState(0);
 
-  const [metaToken, setMetaToken] = useState(() => localStorage.getItem('meta_access_token') || '');
-  const [tokenConfigured, setTokenConfigured] = useState(() => !!localStorage.getItem('meta_access_token'));
+  // A credencial da Meta vive no servidor (Edge Function meta-proxy). Aqui só
+  // guardamos o estado da conexão da agência para habilitar ou bloquear a
+  // publicação — o token nunca chega ao navegador.
+  const [connection, setConnection] = useState({ connected: false, name: null, status: null, message: null });
+  const [connectionChecked, setConnectionChecked] = useState(false);
   const [configLoading, setConfigLoading] = useState(false);
   const [configError, setConfigError] = useState('');
   const [configSaved, setConfigSaved] = useState(false);
@@ -230,7 +251,8 @@ const MetaAdCreator = ({ card, onClose, onComplete, projectId, quickPreset = nul
   const [configBmId, setConfigBmId] = useState('');
   const [configAccountId, setConfigAccountId] = useState('');
   const [configPageId, setConfigPageId] = useState('');
-  const isDemoMode = !tokenConfigured;
+  const tokenConfigured = connection.connected;
+  const isDemoMode = !connection.connected;
   const DRAFT_KEY = `meta_draft_${card.id || card.clientId}`;
 
   // ─── Histórico de anúncios criados ───────────────────────────────────────────
@@ -649,16 +671,34 @@ ${rows.map(r => `<tr>
   const [adAccounts, setAdAccounts] = useState([]);
   const [allRawAccounts, setAllRawAccounts] = useState([]);
 
+  // Estado da conexão OAuth da agência. Enquanto ela não estiver ativa, o
+  // criador roda em modo demonstração e não publica nada.
   useEffect(() => {
-    const token = localStorage.getItem('meta_access_token');
-    if (!token) {
+    // Remove a credencial que versões anteriores guardavam no navegador. Sem
+    // isso, o token continuaria exposto na máquina de quem já usou a ferramenta.
+    try {
+      localStorage.removeItem('meta_access_token');
+    } catch { /* navegador sem storage: nada a limpar */ }
+
+    let alive = true;
+    getMetaConnectionState()
+      .then(state => { if (alive) setConnection(state); })
+      .catch(() => { if (alive) setConnection({ connected: false, name: null, status: null, message: null }); })
+      .finally(() => { if (alive) setConnectionChecked(true); });
+    return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!connectionChecked) return;
+    if (!connection.connected) {
       setBms(MOCK_BM_DATA.bms);
       setLoadingBms(false);
       return;
     }
-    // Single call: fetch all accounts with business info — no business_management permission needed
-    fetch(`${META_API}/me/adaccounts?fields=id,name,account_status,business{id,name}&limit=100&access_token=${token}`)
-      .then(r => r.json())
+    setLoadingBms(true);
+    // Uma chamada só: contas com o business embutido — não exige a permissão
+    // business_management para montar a lista.
+    metaGet('me/adaccounts', { fields: 'id,name,account_status,business{id,name}', limit: 100 })
       .then(data => {
         if (data.error) throw new Error(data.error.message);
         const accounts = data.data || [];
@@ -679,15 +719,14 @@ ${rows.map(r => `<tr>
         if (!startBlank) setAccountData(a => ({ ...a, bmId: '__direct__' }));
       })
       .finally(() => setLoadingBms(false));
-  }, []);
+  }, [connectionChecked, connection.connected]);
 
   useEffect(() => {
     const bmId = accountData.bmId;
     if (!bmId) { setAdAccounts([]); return; }
     const pending = pendingPresetRef.current;
     const isApplyingPreset = pending && pending.bmId === bmId;
-    const token = localStorage.getItem('meta_access_token');
-    if (!token) {
+    if (!connection.connected) {
       setAdAccounts(MOCK_BM_DATA.accounts[bmId] || []);
       if (isApplyingPreset) {
         setAccountData(a => ({ ...a, adAccountId: pending.adAccountId, pageId: pending.pageId, igId: pending.instagramId || '' }));
@@ -705,12 +744,16 @@ ${rows.map(r => `<tr>
       setAdSetData(a => ({ ...a, igId: pending.instagramId || a.igId, pixelId: pending.pixelId || a.pixelId, budget: Number(pending.budget) || a.budget }));
       pendingPresetRef.current = null;
     }
-  }, [accountData.bmId, allRawAccounts]);
+  }, [accountData.bmId, allRawAccounts, connection.connected]);
 
   const [advertisers, setAdvertisers] = useState([]);
   const [loadingAdvertisers, setLoadingAdvertisers] = useState(false);
   const [advertiserFetchError, setAdvertiserFetchError] = useState('');
   const [advertiserAutoFallback, setAdvertiserAutoFallback] = useState(false);
+  // Confirmação de quem paga pelo anúncio. Sem ela a publicação não sai.
+  const [advertiserConfirmed, setAdvertiserConfirmed] = useState(false);
+  // Categoria especial da campanha: sem valor padrão, de propósito.
+  const [specialAdCategory, setSpecialAdCategory] = useState('');
 
   useEffect(() => {
     const bmId = accountData.bmId;
@@ -722,12 +765,16 @@ ${rows.map(r => `<tr>
       return;
     }
 
-    // Algumas contas da Meta não expõem o endpoint /advertisers. Nesses casos,
-    // o próprio ID numérico da conta de anúncios é aceito no compliance_section.
-    const fallbackAdvertiserId = String(adAccountId).replace(/^act_/, '').trim();
-    if (!accountData.advertiserAccountId && fallbackAdvertiserId) {
-      setAccountData(current => ({ ...current, advertiserAccountId: fallbackAdvertiserId }));
+    // O anunciante pagador (compliance_section) é uma declaração regulatória
+    // exigida pela Meta no Brasil. Antes o código preenchia sozinho quando não
+    // achava o valor real — isso é declarar um pagador que pode estar errado.
+    // Agora só sugerimos o ID da conta; publicar exige a confirmação explícita
+    // do operador logo abaixo do campo.
+    const suggestedAdvertiserId = String(adAccountId).replace(/^act_/, '').trim();
+    if (!accountData.advertiserAccountId && suggestedAdvertiserId) {
+      setAccountData(current => ({ ...current, advertiserAccountId: suggestedAdvertiserId }));
       setAdvertiserAutoFallback(true);
+      setAdvertiserConfirmed(false);
     } else {
       setAdvertiserAutoFallback(false);
     }
@@ -737,8 +784,7 @@ ${rows.map(r => `<tr>
       setAdvertiserFetchError('');
       return;
     }
-    const token = localStorage.getItem('meta_access_token');
-    if (!token) {
+    if (!connection.connected) {
       setAdvertisers([]);
       setAdvertiserFetchError('');
       return;
@@ -748,13 +794,10 @@ ${rows.map(r => `<tr>
 
     const tryEndpoints = async () => {
       // Tenta BM primeiro, depois ad account como fallback
-      const endpoints = [
-        `${META_API}/${bmId}/advertisers?fields=id,name&limit=50&access_token=${token}`,
-        adAccountId ? `${META_API}/${adAccountId}/advertisers?fields=id,name&limit=50&access_token=${token}` : null,
-      ].filter(Boolean);
+      const endpoints = [`${bmId}/advertisers`, adAccountId ? `${adAccountId}/advertisers` : null].filter(Boolean);
 
-      for (const url of endpoints) {
-        const data = await fetch(url).then(r => r.json()).catch(() => null);
+      for (const path of endpoints) {
+        const data = await metaGet(path, { fields: 'id,name', limit: 50 }).catch(() => null);
         if (!data) continue;
         if (data.error) {
           setAdvertiserFetchError(`API: [${data.error.code}] ${data.error.message}`);
@@ -771,44 +814,33 @@ ${rows.map(r => `<tr>
     };
 
     tryEndpoints().finally(() => setLoadingAdvertisers(false));
-  }, [accountData.bmId, accountData.adAccountId]);
+  }, [accountData.bmId, accountData.adAccountId, connection.connected]);
 
   const [apiData, setApiData] = useState({ campaigns: [], pages: [], igs: [], pixels: [] });
   const [loadingApi, setLoadingApi] = useState(false);
 
+  // Recarrega BMs, contas e páginas usando a conexão OAuth da agência. Não há
+  // token para testar aqui: a credencial fica no servidor.
   const loadMetaConfiguration = async () => {
-    const token = metaToken.trim();
-    if (!token) {
-      setConfigError('Informe o token de acesso da Meta.');
-      return;
-    }
-
     setConfigLoading(true);
     setConfigError('');
     setConfigSaved(false);
     try {
-      const fetchAll = async (path) => {
-        const separator = path.includes('?') ? '&' : '?';
-        let next = `${META_API}/${path}${separator}access_token=${encodeURIComponent(token)}`;
-        const rows = [];
-        for (let page = 0; page < 20 && next; page++) {
-          const response = await fetch(next);
-          const payload = await response.json();
-          if (!response.ok || payload.error) throw new Error(payload.error?.message || 'Falha ao consultar a Meta.');
-          rows.push(...(payload.data || []));
-          next = payload.paging?.next || null;
-        }
-        return rows;
-      };
+      const state = await getMetaConnectionState();
+      setConnection(state);
+      if (!state.connected) {
+        throw new MetaNotConnectedError(
+          state.message || 'A agência ainda não está conectada à Meta. Um administrador precisa conectar em Configurações › APIs.'
+        );
+      }
 
-      const profileResponse = await fetch(`${META_API}/me?fields=id,name&access_token=${encodeURIComponent(token)}`);
-      const profile = await profileResponse.json();
-      if (!profileResponse.ok || profile.error) throw new Error(profile.error?.message || 'Token inválido.');
+      const profile = await metaGet('me', { fields: 'id,name' });
+      if (profile.error) throw new Error(profile.error.message || 'A Meta recusou a credencial da agência.');
 
       const [businesses, rawAccounts, rawPages] = await Promise.all([
-        fetchAll('me/businesses?fields=id,name&limit=200').catch(() => []),
-        fetchAll('me/adaccounts?fields=id,name,account_status,business{id,name}&limit=200'),
-        fetchAll('me/accounts?fields=id,name,instagram_business_account{id,username}&limit=200').catch(() => []),
+        metaGetAll('me/businesses', { fields: 'id,name', limit: 200 }).catch(() => []),
+        metaGetAll('me/adaccounts', { fields: 'id,name,account_status,business{id,name}', limit: 200 }),
+        metaGetAll('me/accounts', { fields: 'id,name,instagram_business_account{id,username}', limit: 200 }).catch(() => []),
       ]);
 
       const bmMap = new Map(businesses.map(business => [business.id, { id: business.id, name: business.name }]));
@@ -844,12 +876,10 @@ ${rows.map(r => `<tr>
   };
 
   const saveMetaConfiguration = () => {
-    if (!metaToken.trim() || !configProfile) {
-      setConfigError('Teste o token e aguarde a confirmação antes de salvar.');
+    if (!configProfile) {
+      setConfigError('Carregue os dados da conexão antes de aplicar.');
       return;
     }
-    localStorage.setItem('meta_access_token', metaToken.trim());
-    setTokenConfigured(true);
     setBms(configAssets.bms);
     setAllRawAccounts(configAssets.accounts);
     setAdAccounts([]);
@@ -872,20 +902,20 @@ ${rows.map(r => `<tr>
   useEffect(() => {
     const adAccountId = accountData.adAccountId;
     if (!adAccountId) return;
-    const token = localStorage.getItem('meta_access_token');
+    const isConnected = connection.connected;
     setLoadingApi(true);
     async function load() {
       try {
-        if (!token) {
+        if (!isConnected) {
           const [camps, pgs, igs, pixs] = await Promise.all([
             MOCK_API.fetchCampaigns(), MOCK_API.fetchPages(), MOCK_API.fetchIg(), MOCK_API.fetchPixels()
           ]);
           setApiData({ campaigns: camps, pages: pgs, igs: igs, pixels: pixs });
         } else {
           const [campsRes, pgsRes, pixsRes] = await Promise.all([
-            fetch(`${META_API}/${adAccountId}/campaigns?fields=id,name,status&limit=100&access_token=${token}`).then(r => r.json()),
-            fetch(`${META_API}/me/accounts?fields=id,name,instagram_business_account{id,username}&limit=50&access_token=${token}`).then(r => r.json()).catch(() => ({ data: [] })),
-            fetch(`${META_API}/${adAccountId}/adspixels?fields=id,name&limit=25&access_token=${token}`).then(r => r.json()).catch(() => ({ data: [] })),
+            metaGet(`${adAccountId}/campaigns`, { fields: 'id,name,status', limit: 100 }),
+            metaGet('me/accounts', { fields: 'id,name,instagram_business_account{id,username}', limit: 50 }).catch(() => ({ data: [] })),
+            metaGet(`${adAccountId}/adspixels`, { fields: 'id,name', limit: 25 }).catch(() => ({ data: [] })),
           ]);
           if (campsRes.error) throw new Error(campsRes.error.message);
           const pagesData = pgsRes.data || [];
@@ -909,7 +939,7 @@ ${rows.map(r => `<tr>
       } catch (e) { console.error('loadApiData:', e); } finally { setLoadingApi(false); }
     }
     load();
-  }, [accountData.adAccountId]);
+  }, [accountData.adAccountId, connection.connected]);
 
   // AdSets existentes (carregados ao selecionar campanha existente)
   const [existingAdSets, setExistingAdSets] = useState([]);
@@ -947,30 +977,22 @@ ${rows.map(r => `<tr>
   useEffect(() => {
     const campId = campAction === 'existing' ? campData.existingId : null;
     if (!campId) { setExistingAdSets([]); setAdSetFetchError(null); return; }
-    const token = localStorage.getItem('meta_access_token');
-    if (!token) return;
+    if (!connection.connected) return;
     setLoadingAdSets(true);
     setSelectedAdSetIds([]);
     setAdSetFetchError(null);
 
-    const RATE_CODES = new Set([4, 17, 32, 80004]);
-    const fetchWithRetry = async (url, tries = 4) => {
-      for (let i = 0; i <= tries; i++) {
-        const json = await fetch(url).then(r => r.json());
-        if (json.error && RATE_CODES.has(json.error.code)) {
-          if (i === tries) throw new Error(`Erro ${json.error.code}: ${json.error.message}`);
-          const waitSec = Math.min(15 * 2 ** i, 120);
-          setAdSetFetchError(`⏳ Rate limit — aguardando ${waitSec}s...`);
-          await new Promise(r => setTimeout(r, waitSec * 1000));
-          setAdSetFetchError(null);
-          continue;
-        }
-        return json;
-      }
-    };
-
-    const url = `${META_API}/${campId}/adsets?fields=id,name,status,destination_type&limit=100&access_token=${token}`;
-    fetchWithRetry(url)
+    // A espera por limite de requisição é tratada dentro do cliente da Graph;
+    // aqui só refletimos isso na tela.
+    metaGet(
+      `${campId}/adsets`,
+      { fields: 'id,name,status,destination_type', limit: 100 },
+      {
+        onRateLimit: (seconds) => {
+          setAdSetFetchError(`⏳ Limite de requisições da Meta — aguardando ${seconds}s...`);
+        },
+      },
+    )
       .then(json => {
         if (json?.error) {
           setAdSetFetchError(`Erro ${json.error.code}: ${json.error.message}`);
@@ -982,7 +1004,7 @@ ${rows.map(r => `<tr>
       })
       .catch(err => { setAdSetFetchError(`Falha: ${err.message}`); setExistingAdSets([]); })
       .finally(() => setLoadingAdSets(false));
-  }, [campData.existingId, campAction, adSetRetryKey]);
+  }, [campData.existingId, campAction, adSetRetryKey, connection.connected]);
 
   // ─── Fetch objetivo da campanha existente ─────────────────────────────────────
   useEffect(() => {
@@ -990,11 +1012,9 @@ ${rows.map(r => `<tr>
       setCampaignObjective(null);
       return;
     }
-    const token = localStorage.getItem('meta_access_token');
-    if (!token) return;
+    if (!connection.connected) return;
     setLoadingObjective(true);
-    fetch(`${META_API}/${campData.existingId}?fields=objective&access_token=${token}`)
-      .then(r => r.json())
+    metaGet(campData.existingId, { fields: 'objective' })
       .then(data => {
         if (data.objective) {
           setCampaignObjective(data.objective);
@@ -1004,7 +1024,7 @@ ${rows.map(r => `<tr>
       })
       .catch(() => {})
       .finally(() => setLoadingObjective(false));
-  }, [campData.existingId, campAction]);
+  }, [campData.existingId, campAction, connection.connected]);
 
   // ─── Tab 2: Conjunto (AdSet) ──────────────────────────────────────────────────
   const [adSetData, setAdSetData] = useState({
@@ -1087,11 +1107,16 @@ ${rows.map(r => `<tr>
        !accountData.pageId ? 'Selecione uma Página do Facebook.' : null,
     1: campAction === 'existing' && !campData.existingId ? 'Selecione uma campanha existente.' :
        campAction === 'existing' && adSetAction === 'existing' && selectedAdSetIds.length === 0 ? 'Selecione pelo menos um conjunto de anúncios.' :
-       campAction === 'new' && !campData.name.trim() ? 'Informe o nome da campanha.' : null,
+       campAction === 'new' && !campData.name.trim() ? 'Informe o nome da campanha.' :
+       campAction === 'new' && !specialAdCategory ? 'Declare a categoria especial da campanha.' : null,
     2: (campAction === 'existing' && adSetAction === 'existing' && selectedAdSetIds.length > 0) ? null :
        !adSetData.name.trim() ? 'Informe o nome do conjunto.' : null,
+    // A checagem do link cobre a proibição de destino dinâmico (cloaking): o
+    // encurtador interno pode trocar de destino depois da aprovação do anúncio.
     3: mediaFiles.length === 0 ? 'Adicione pelo menos 1 mídia.' :
-       (needsUrl && !adsData.link.trim()) ? 'Informe a URL de destino.' : null,
+       (needsUrl && !adsData.link.trim()) ? 'Informe a URL de destino.' :
+       (needsUrl ? validateDestinationUrl(adsData.link) : null) ||
+       (needsUrl ? Object.values(adCopyOverrides).map(override => validateDestinationUrl(override?.link || '')).find(Boolean) || null : null),
   };
 
   // ─── Funções de Rascunho ─────────────────────────────────────────────────────
@@ -1271,6 +1296,30 @@ ${rows.map(r => `<tr>
       return;
     }
 
+    // ── Barreiras de conformidade ────────────────────────────────────────────
+    // Cada uma corresponde a uma exigência da Meta que, se ignorada, coloca a
+    // conta de anúncios em risco. Nenhuma delas tem valor assumido pelo código.
+    if (!connection.connected) {
+      setError('A agência não está conectada à Meta. Peça a um administrador para conectar em Configurações › APIs.');
+      return;
+    }
+    if (campAction === 'new' && !specialAdCategory) {
+      setError('Declare a categoria especial da campanha antes de publicar. Crédito, emprego, moradia, política e apostas têm regras próprias na Meta, e declarar errado restringe a conta.');
+      setActiveTab(1);
+      return;
+    }
+    const effectiveAdvertiserIdCheck = accountData.advertiserAccountId || adSetData.advertiserAccountId;
+    if (!effectiveAdvertiserIdCheck) {
+      setError('Selecione o anunciante que paga por estes anúncios. A Meta exige essa identificação e ela não pode ser preenchida por suposição.');
+      setActiveTab(0);
+      return;
+    }
+    if (advertiserAutoFallback && !advertiserConfirmed) {
+      setError('Confirme que o anunciante pagador está correto na aba Conta & BM. Esse dado é uma declaração regulatória e precisa ser conferido por uma pessoa.');
+      setActiveTab(0);
+      return;
+    }
+
     setIsPublishing(true);
     setPublishDone(false);
     setError(null);
@@ -1279,7 +1328,6 @@ ${rows.map(r => `<tr>
     setLogs([]);
     setProgress(0);
 
-    const token = localStorage.getItem('meta_access_token');
     // Todo endpoint de criação exige o nó act_<ID>. Sem ele, a Meta interpreta
     // "campaigns" como se fosse um ID de objeto e devolve o erro [100/33].
     const adAccountId = normalizedAdAccountId;
@@ -1313,146 +1361,54 @@ ${rows.map(r => `<tr>
     };
     const sem = makeSem(5);
 
-    // ── Fetch com retry em rate-limit ────────────────────────────────────────
-    const RATE_CODES = new Set([4, 17, 32, 80004]);
-    const fetchRetry = async (url, opts, tries = 4) => {
-      for (let i = 0; i <= tries; i++) {
-        const r = await fetch(url, opts);
-        const j = await r.json();
-        if (j.error && RATE_CODES.has(j.error.code)) {
-          if (i === tries) throw new Error(`Rate limit Meta (${j.error.code}). Aguarde e tente novamente.`);
-          const wait = Math.min(15 * 2 ** i, 120);
-          pushLog(`⏳ Rate limit (${j.error.code}) — aguardando ${wait}s...`, 'loading');
-          await new Promise(r => setTimeout(r, wait * 1000));
-          continue;
-        }
-        return j;
-      }
-    };
+    // A espera por limite de requisição acontece dentro do cliente da Graph;
+    // aqui só mostramos ao operador o que está acontecendo.
+    const rateLimitNotice = { onRateLimit: (seconds, code) => pushLog(`⏳ Limite de requisições da Meta (${code}) — aguardando ${seconds}s...`, 'loading') };
 
-    // ── POST simples na Graph API ────────────────────────────────────────────
+    // ── POST simples na Graph API (via servidor) ─────────────────────────────
     const apiPost = async (endpoint, params) => {
       if (!/^act_\d+\/(campaigns|adsets)$/.test(endpoint)) {
         throw new Error(`Endpoint de publicação inválido: ${endpoint}. Selecione novamente a conta de anúncios.`);
       }
-      const body = new URLSearchParams({ ...params, access_token: token });
-      const j = await fetchRetry(`${META_API}/${endpoint}`, { method: 'POST', body });
-      if (j?.error) {
-        const e = j.error;
-        const full = `[${e.code}${e.error_subcode ? '/' + e.error_subcode : ''}] ${e.error_user_msg || e.message}${e.error_data ? ' | data: ' + JSON.stringify(e.error_data) : ''}`;
-        throw new Error(full);
-      }
-      return j;
+      return metaPost(endpoint, params, rateLimitNotice);
     };
 
     // ── Upload de IMAGEM ─────────────────────────────────────────────────────
     const uploadImage = async (file) => {
-      const form = new FormData();
-      form.append('access_token', token);
-      form.append('filename', file);
-      const j = await fetchRetry(`${META_API}/${adAccountId}/adimages`, { method: 'POST', body: form });
-      if (j?.error) throw new Error(`[IMG] ${j.error.message}`);
-      const img = Object.values(j.images || {})[0];
-      if (!img?.hash) throw new Error('Upload de imagem não retornou hash.');
-      return { type: 'IMAGE', hash: img.hash };
+      const hash = await metaUploadImage(adAccountId, file);
+      return { type: 'IMAGE', hash };
     };
 
-    // A Meta aceita o upload antes de terminar a codificação. O vídeo só pode
-    // ser associado ao criativo depois que status.video_status virar "ready".
-    const waitForVideoReady = async (videoId, logPrefix, timeoutMs = 10 * 60 * 1000) => {
-      const startedAt = Date.now();
-      const statusLogId = `video-status-${videoId}-${Date.now()}`;
-      setLogs(prev => [...prev, { id: statusLogId, msg: `${logPrefix} Meta processando o vídeo...`, status: 'loading' }]);
-
-      while (Date.now() - startedAt < timeoutMs) {
-        const result = await fetchRetry(
-          `${META_API}/${videoId}?fields=status&access_token=${encodeURIComponent(token)}`,
-          { method: 'GET' },
-        );
-        if (result?.error) {
-          updateLogById(statusLogId, 'error');
-          throw new Error(`[VIDEO-STATUS] ${result.error.message}`);
-        }
-
-        const status = result?.status || {};
-        const videoStatus = String(status.video_status || '').toLowerCase();
-        const processingStatus = String(status.processing_phase?.status || '').toLowerCase();
-        if (['error', 'failed'].includes(videoStatus) || ['error', 'failed'].includes(processingStatus)) {
-          updateLogById(statusLogId, 'error');
-          const details = status.processing_phase?.errors || status.error_description || status;
-          throw new Error(`[VIDEO-PROCESSING] A Meta rejeitou o processamento: ${JSON.stringify(details)}`);
-        }
-        // processing_phase=complete sozinho não significa que o vídeo foi
-        // aprovado. O SDK oficial só libera quando video_status é "ready".
-        if (videoStatus === 'ready') {
-          updateLogById(statusLogId, 'success');
-          return result;
-        }
-
-        await new Promise(resolve => setTimeout(resolve, 5000));
-      }
-
-      updateLogById(statusLogId, 'error');
-      throw new Error('[VIDEO-TIMEOUT] A Meta não concluiu o processamento em 10 minutos. Tente novamente após converter para MP4/H.264/AAC.');
-    };
-
-    // ── Upload de VÍDEO (chunked via graph.facebook.com) ────────────────────
-    // graph.facebook.com tem CORS correto para uso no browser (rupload não tem)
+    // ── Upload de VÍDEO ──────────────────────────────────────────────────────
+    // O arquivo vai para o bucket privado do projeto e a Meta o baixa por URL
+    // assinada, emitida pela Edge Function. Isso substitui o envio em partes
+    // feito antes pelo navegador, que só funcionava com o token exposto aqui.
     const uploadVideo = async (file, logPrefix) => {
-      pushLog(`${logPrefix} Iniciando envio do vídeo...`, 'loading');
+      const uploadLogId = `video-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      setLogs(prev => [...prev, { id: uploadLogId, msg: `${logPrefix} Preparando o vídeo...`, status: 'loading' }]);
 
-      // PASSO 1: start
-      const startForm = new FormData();
-      startForm.append('access_token', token);
-      startForm.append('upload_phase', 'start');
-      startForm.append('file_size', file.size);
-      const startRes = await fetchRetry(`${META_API}/${adAccountId}/advideos`, { method: 'POST', body: startForm });
-      if (startRes?.error) throw new Error(`[VIDEO-START] ${startRes.error.message}`);
-      const { upload_session_id, video_id: videoId } = startRes;
-      let { start_offset: startOffset, end_offset: endOffset } = startRes;
-
-      // PASSO 2: a Meta determina o início e o fim de cada parte. Não podemos
-      // calcular a quantidade localmente, pois isso pode finalizar um arquivo
-      // incompleto quando o servidor escolhe partes menores.
-      let part = 0;
-      while (Number(startOffset) < file.size && String(startOffset) !== String(endOffset)) {
-        const chunkStart = parseInt(startOffset, 10);
-        const chunkEnd = parseInt(endOffset, 10);
-        if (!Number.isFinite(chunkStart) || !Number.isFinite(chunkEnd) || chunkEnd <= chunkStart || chunkEnd > file.size) {
-          throw new Error(`[VIDEO-CHUNK] A Meta retornou offsets inválidos (${startOffset}-${endOffset}).`);
-        }
-        part += 1;
-        if (part > 10000) throw new Error('[VIDEO-CHUNK] Limite de partes excedido.');
-        const chunkForm = new FormData();
-        chunkForm.append('access_token', token);
-        chunkForm.append('upload_phase', 'transfer');
-        chunkForm.append('upload_session_id', upload_session_id);
-        chunkForm.append('start_offset', startOffset);
-        chunkForm.append('end_offset', endOffset);
-        chunkForm.append('video_file_chunk', file.slice(chunkStart, chunkEnd), file.name);
-        const chunkRes = await fetchRetry(`${META_API}/${adAccountId}/advideos`, { method: 'POST', body: chunkForm });
-        if (chunkRes?.error) throw new Error(`[VIDEO-CHUNK ${part}] ${chunkRes.error.message}`);
-        startOffset = chunkRes.start_offset;
-        endOffset = chunkRes.end_offset;
-        const pct = Math.min(100, Math.round((chunkEnd / file.size) * 100));
-        pushLog(`${logPrefix} Upload ${pct}% (parte ${part})`, 'loading');
+      let videoId;
+      try {
+        videoId = await metaUploadVideo(adAccountId, file, (stage) => {
+          if (stage === 'uploading') setLogs(prev => prev.map(l => l.id === uploadLogId ? { ...l, msg: `${logPrefix} Enviando o vídeo...` } : l));
+          if (stage === 'sending') setLogs(prev => prev.map(l => l.id === uploadLogId ? { ...l, msg: `${logPrefix} Entregando o vídeo à Meta...` } : l));
+        });
+      } catch (caught) {
+        updateLogById(uploadLogId, 'error');
+        throw caught;
       }
+      updateLogById(uploadLogId, 'success');
 
-      if (Number(startOffset) < file.size) {
-        throw new Error(`[VIDEO-INCOMPLETE] Upload interrompido em ${startOffset} de ${file.size} bytes.`);
+      const statusLogId = `video-status-${videoId}`;
+      setLogs(prev => [...prev, { id: statusLogId, msg: `${logPrefix} Meta processando o vídeo...`, status: 'loading' }]);
+      try {
+        await waitForVideoReady(videoId);
+      } catch (caught) {
+        updateLogById(statusLogId, 'error');
+        throw caught;
       }
-
-      // PASSO 3: finish e aguarda a codificação antes de criar o criativo.
-      const finishForm = new FormData();
-      finishForm.append('access_token', token);
-      finishForm.append('upload_phase', 'finish');
-      finishForm.append('upload_session_id', upload_session_id);
-      finishForm.append('title', file.name);
-      const finishRes = await fetchRetry(`${META_API}/${adAccountId}/advideos`, { method: 'POST', body: finishForm });
-      if (finishRes?.error) throw new Error(`[VIDEO-FINISH] ${finishRes.error.message}`);
-      const completedVideoId = finishRes.video_id || videoId;
-      await waitForVideoReady(completedVideoId, logPrefix);
-      return { type: 'VIDEO', id: completedVideoId };
+      updateLogById(statusLogId, 'success');
+      return { type: 'VIDEO', id: videoId };
     };
 
     // ── Thumbnail (captura frame 0.5s do vídeo) ──────────────────────────────
@@ -1472,11 +1428,7 @@ ${rows.map(r => `<tr>
           URL.revokeObjectURL(url);
           canvas.toBlob(async (blob) => {
             try {
-              const form = new FormData();
-              form.append('access_token', token);
-              form.append('filename', blob, 'thumb.jpg');
-              const j = await fetchRetry(`${META_API}/${adAccountId}/adimages`, { method: 'POST', body: form });
-              resolve(Object.values(j?.images || {})[0]?.hash || null);
+              resolve(await metaUploadImage(adAccountId, blob));
             } catch { resolve(null); }
           }, 'image/jpeg', 0.85);
         } catch { URL.revokeObjectURL(url); resolve(null); }
@@ -1487,13 +1439,8 @@ ${rows.map(r => `<tr>
     // ── Batch item com encoding correto ──────────────────────────────────────
     // CORREÇÃO: body deve ser string URL-encoded manualmente (não URLSearchParams)
     // para garantir que JSON strings dentro dos values sejam encodados corretamente
-    const buildBatchItem = (relativeUrl, params) => ({
-      method: 'POST',
-      relative_url: relativeUrl,
-      body: Object.entries(params)
-        .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(typeof v === 'object' ? JSON.stringify(v) : v)}`)
-        .join('&'),
-    });
+    // buildBatchItem vem de lib/metaGraph — o corpo é montado igual, mas sem
+    // carregar access_token em nenhum item do lote.
 
     // ── object_story_spec por tipo de mídia ──────────────────────────────────
     const buildStorySpec = ({ uploaded, thumbHash, isMsgDest, isWhatsApp, isMessenger, isLeadForm, isMultiDest, finalUrl, pageId, igId, copy }) => {
@@ -1558,8 +1505,8 @@ ${rows.map(r => `<tr>
       pushLog(`BM: ${selectedBm?.name || accountData.bmId} · Conta: ${selectedAccount?.name || adAccountId}`, 'success');
       setProgress(5);
 
-      if (!token) {
-        pushLog('MODO DEMO — configure o token Meta em Configurações.', 'error');
+      if (!connection.connected) {
+        pushLog('MODO DEMONSTRAÇÃO — a agência precisa estar conectada à Meta em Configurações › APIs.', 'error');
         setIsPublishing(false);
         return;
       }
@@ -1572,12 +1519,16 @@ ${rows.map(r => `<tr>
         setProgress(15);
       } else {
         pushLog(`Criando campanha: "${campData.name}"...`);
+        // A categoria especial é declarada pelo operador na aba Campanha. Antes
+        // este campo ia fixo como "[]", o que equivale a declarar à Meta que
+        // nenhum anunciante trata de crédito, emprego, moradia ou política.
         const payload = {
           name: campData.name,
           objective: campData.objective,
           status: createAsDraft ? 'DRAFT' : 'PAUSED',
-          special_ad_categories: '[]',
+          special_ad_categories: serializeSpecialAdCategories(specialAdCategory),
         };
+        pushLog(`Categoria especial declarada: ${specialAdCategoryLabel(specialAdCategory)}`, 'success');
         if (campData.budgetType === 'CBO') {
           payload.daily_budget = String(campData.budget * 100);
         } else {
@@ -1619,17 +1570,18 @@ ${rows.map(r => `<tr>
           targeting: JSON.stringify(targeting),
         };
         if (campData.budgetType !== 'CBO') adSetPayload.daily_budget = String(adSetData.budget * 100);
-        // compliance_section: exigido pela Meta para anúncios no Brasil (subcode 3858634)
+        // compliance_section: exigido pela Meta para anúncios no Brasil
+        // (subcode 3858634). É a declaração de quem paga pelo anúncio, então
+        // não aceita valor de reserva — o ID vem da seleção confirmada pelo
+        // operador, e a publicação já foi bloqueada antes daqui se faltasse.
         const effectiveAdvertiserId = accountData.advertiserAccountId || adSetData.advertiserAccountId;
-        const complianceAdvertiserId = effectiveAdvertiserId || accountData.bmId;
-        if (complianceAdvertiserId && complianceAdvertiserId !== '__direct__') {
-          adSetPayload.compliance_section = JSON.stringify({
-            payment_advertiser: { advertiser_id: complianceAdvertiserId },
-          });
-          pushLog(`compliance_section → advertiser_id: ${complianceAdvertiserId}${!effectiveAdvertiserId ? ' (usando BM ID como fallback)' : ''}`, 'loading');
-        } else {
-          pushLog('⚠️ compliance_section NÃO enviada — selecione novamente a conta de anúncios no passo Conta & BM.', 'loading');
+        if (!effectiveAdvertiserId || effectiveAdvertiserId === '__direct__') {
+          throw new Error('Anunciante pagador não identificado. Selecione o anunciante na aba Conta & BM — a Meta exige essa declaração e ela não pode ser presumida.');
         }
+        adSetPayload.compliance_section = JSON.stringify({
+          payment_advertiser: { advertiser_id: effectiveAdvertiserId },
+        });
+        pushLog(`Anunciante pagador declarado: ${effectiveAdvertiserId}`, 'success');
 
         if (effectiveObjective === 'OUTCOME_SALES') {
           if (adSetData.pixelId) {
@@ -1700,8 +1652,7 @@ ${rows.map(r => `<tr>
           if (cachedDestType && !KNOWN_DEST_TYPES.includes(cachedDestType)) {
             pushLog(`⚠️ destination_type "${cachedDestType}" — tratando como multi-destino`, 'loading');
           }
-          const dtRes = await fetch(`${META_API}/${allAdSetIds[0]}?fields=destination_type,promoted_object,optimization_goal&access_token=${token}`)
-            .then(r => r.json()).catch(() => ({}));
+          const dtRes = await metaGet(allAdSetIds[0], { fields: 'destination_type,promoted_object,optimization_goal' }).catch(() => ({}));
           const apiDest = dtRes.destination_type;
           if (apiDest && KNOWN_DEST_TYPES.includes(apiDest)) {
             resolvedDestType = apiDest;
@@ -1717,8 +1668,7 @@ ${rows.map(r => `<tr>
         pushLog(`Destino do conjunto: ${resolvedDestType}${isMultiDestAdSet ? ' (multi-destino)' : ''}`, 'success');
         // Buscar promoted_object se ainda não foi obtido
         if (!adSetPromotedObject) {
-          const poRes = await fetch(`${META_API}/${allAdSetIds[0]}?fields=promoted_object,optimization_goal&access_token=${token}`)
-            .then(r => r.json()).catch(() => ({}));
+          const poRes = await metaGet(allAdSetIds[0], { fields: 'promoted_object,optimization_goal' }).catch(() => ({}));
           adSetPromotedObject = poRes.promoted_object || null;
         }
       }
@@ -1820,19 +1770,14 @@ ${rows.map(r => `<tr>
           name: `Creative - ${adName}`,
           object_story_spec: storySpec,
           degrees_of_freedom_spec: JSON.stringify({ creative_features_spec: preserveOriginalMedia ? originalMediaFeatures : {} }),
-          access_token: token,
         } : {
           name: `Creative - ${adName}`,
           object_story_spec: storySpec,
-          access_token: token,
         };
         return buildBatchItem(`${adAccountId}/adcreatives`, creativeParams);
       });
 
-      const batchCreativeRes = await fetchRetry(`${META_API}/`, {
-        method: 'POST',
-        body: new URLSearchParams({ access_token: token, batch: JSON.stringify(creativeBatch) }),
-      });
+      const batchCreativeRes = await metaBatch(creativeBatch, rateLimitNotice);
       const creativeIds = [];
       for (let i = 0; i < batchCreativeRes.length; i++) {
         let body;
@@ -1867,20 +1812,10 @@ ${rows.map(r => `<tr>
             creative: JSON.stringify({ creative_id: creativeIds[idx] }),
             status: createAsDraft ? 'DRAFT' : 'PAUSED',
             ...(trackingSpecs ? { tracking_specs: trackingSpecs } : {}),
-            access_token: token,
           })
         );
 
-        const batchAdsRes = await fetchRetry(`${META_API}/`, {
-          method: 'POST',
-          body: new URLSearchParams({ access_token: token, batch: JSON.stringify(adsBatch) }),
-        });
-
-        // Validar que a resposta é um array (se for objeto com .error, a API falhou)
-        if (!Array.isArray(batchAdsRes)) {
-          const apiErr = batchAdsRes?.error;
-          throw new Error(`Batch de anúncios falhou: [${apiErr?.code}] ${apiErr?.message || JSON.stringify(batchAdsRes)}`);
-        }
+        const batchAdsRes = await metaBatch(adsBatch, rateLimitNotice);
 
         let okCount = 0;
         for (let adIndex = 0; adIndex < batchAdsRes.length; adIndex++) {
@@ -2166,7 +2101,7 @@ ${rows.map(r => `<tr>
           <div style={{ padding: '10px 24px', background: 'rgba(245,158,11,0.07)', borderBottom: '1px solid rgba(245,158,11,0.2)', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Info size={14} color="#f59e0b" />
             <span style={{ fontSize: '12px', color: '#f59e0b', fontWeight: '600' }}>
-              Modo demonstração — abra <strong>Configuração da Meta</strong> no menu lateral para salvar o token e carregar suas contas.
+              Modo demonstração — a agência ainda não está conectada à Meta. Um administrador precisa conectar em <strong>Configurações › APIs</strong>.
             </span>
           </div>
         )}
@@ -2231,9 +2166,9 @@ ${rows.map(r => `<tr>
                 }}
               >
                 <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <Settings size={14} /> Configuração da Meta
+                  <Settings size={14} /> Conexão com a Meta
                 </span>
-                {metaToken.trim() && <CheckCircle size={13} color="#10b981" />}
+                {connection.connected && <CheckCircle size={13} color="#10b981" />}
               </button>
               <div style={{ height: '1px', background: 'var(--border-light)', margin: '8px 0' }} />
               <button
@@ -2279,39 +2214,41 @@ ${rows.map(r => `<tr>
               return (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '18px', maxWidth: '620px' }}>
                   <div>
-                    <h3 style={{ margin: 0, fontSize: '17px', fontWeight: '800', color: 'var(--text-main)' }}>Configuração da API Meta</h3>
+                    <h3 style={{ margin: 0, fontSize: '17px', fontWeight: '800', color: 'var(--text-main)' }}>Conexão com a Meta</h3>
                     <p style={{ margin: '6px 0 0', fontSize: '12px', lineHeight: 1.6, color: 'var(--text-muted)' }}>
-                      Teste e salve o token. A escolha de Business Manager, conta de anúncios e página fica na etapa Conta & BM.
+                      A credencial da agência fica guardada no servidor e nunca passa por este navegador. Aqui você recarrega as contas, páginas e Business Managers disponíveis.
                     </p>
                   </div>
 
                   <div style={{ padding: '16px', border: '1px solid var(--border-light)', borderRadius: '12px', background: 'var(--bg-surface)' }}>
-                    <label style={labelStyle}>Token de acesso Meta</label>
-                    <div style={{ display: 'flex', gap: '9px' }}>
-                      <input
-                        type="password"
-                        value={metaToken}
-                        onChange={event => setMetaToken(event.target.value)}
-                        placeholder="Cole o token com ads_management e ads_read"
-                        autoComplete="off"
-                        style={{ ...fieldStyle, flex: 1, fontFamily: 'monospace' }}
-                      />
+                    <label style={labelStyle}>Status da conexão</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '9px', flexWrap: 'wrap' }}>
+                      <span style={{
+                        display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '7px 11px', borderRadius: '7px',
+                        fontSize: '12px', fontWeight: '800',
+                        background: connection.connected ? 'rgba(16,185,129,0.10)' : 'rgba(239,68,68,0.10)',
+                        color: connection.connected ? '#10b981' : '#ef4444',
+                        border: `1px solid ${connection.connected ? 'rgba(16,185,129,0.32)' : 'rgba(239,68,68,0.32)'}`,
+                      }}>
+                        {connection.connected ? <CheckCircle size={14} /> : <AlertCircle size={14} />}
+                        {connection.connected ? `Conectada${connection.name ? ` — ${connection.name}` : ''}` : 'Sem conexão ativa'}
+                      </span>
                       <button
                         type="button"
                         onClick={loadMetaConfiguration}
-                        disabled={configLoading || !metaToken.trim()}
+                        disabled={configLoading}
                         style={{
-                          minWidth: '150px', padding: '10px 15px', borderRadius: '8px', border: 'none',
-                          background: configLoading || !metaToken.trim() ? 'var(--border-main)' : 'linear-gradient(135deg, #2f80ff, #06b6d4)',
-                          color: 'white', fontSize: '12px', fontWeight: '800', cursor: configLoading || !metaToken.trim() ? 'not-allowed' : 'pointer',
+                          minWidth: '170px', padding: '10px 15px', borderRadius: '8px', border: 'none',
+                          background: configLoading ? 'var(--border-main)' : 'linear-gradient(135deg, #2f80ff, #06b6d4)',
+                          color: 'white', fontSize: '12px', fontWeight: '800', cursor: configLoading ? 'not-allowed' : 'pointer',
                           display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '7px',
                         }}
                       >
-                        {configLoading ? <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Consultando...</> : 'Testar e carregar'}
+                        {configLoading ? <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Consultando...</> : <><RotateCcw size={14} /> Recarregar contas</>}
                       </button>
                     </div>
-                    <p style={{ margin: '7px 0 0', fontSize: '10px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                      Para publicar anúncios, o token precisa ter acesso às contas e permissão de gerenciamento de anúncios.
+                    <p style={{ margin: '9px 0 0', fontSize: '10px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                      Quem conecta ou reconecta a agência é um administrador, em Configurações › APIs › Meta Ads. Nenhum token é digitado ou guardado aqui — é o que mantém a ferramenta dentro das regras da Meta.
                     </p>
                   </div>
 
@@ -2373,7 +2310,7 @@ ${rows.map(r => `<tr>
                             opacity: !configProfile ? 0.5 : 1, display: 'flex', alignItems: 'center', gap: '7px',
                           }}
                         >
-                          <CheckCircle size={15} /> {configSaved ? 'Token salvo!' : 'Salvar token'}
+                          <CheckCircle size={15} /> {configSaved ? 'Aplicado!' : 'Aplicar contas'}
                         </button>
                       </div>
                     </>
@@ -2683,7 +2620,7 @@ ${rows.map(r => `<tr>
                               {done ? <CheckCircle size={14} /> : '5'}
                             </div>
                             <span style={{ fontSize: '13px', fontWeight: '800', color: 'var(--text-main)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Anunciante da conta</span>
-                            {advertiserAutoFallback && <span style={{ fontSize: '10px', fontWeight: '700', background: 'rgba(16,185,129,0.12)', color: '#10b981', padding: '2px 8px', borderRadius: '4px' }}>AUTOMÁTICO</span>}
+                            {advertiserAutoFallback && <span style={{ fontSize: '10px', fontWeight: '700', background: 'rgba(245,158,11,0.14)', color: '#f59e0b', padding: '2px 8px', borderRadius: '4px' }}>SUGERIDO — CONFIRME</span>}
                             {done && selName && <span style={{ fontSize: '12px', color: '#10b981', fontWeight: '600' }}>— {selName}</span>}
                           </div>
                           <div style={{ paddingLeft: '36px', maxWidth: '400px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -2719,11 +2656,28 @@ ${rows.map(r => `<tr>
                                 />
                                 <div style={{ fontSize: '11px', color: 'var(--text-muted)', lineHeight: 1.6 }}>
                                   {advertiserAutoFallback
-                                    ? <>O ID da conta de anúncios foi aplicado automaticamente. Você só precisa alterar este valor se a Meta indicar outro anunciante.</>
+                                    ? <>Sugerimos o ID da conta de anúncios, mas a Meta pode registrar outro anunciante como pagador. Confira em <strong style={{ color: 'var(--text-main)' }}>business.facebook.com → Configurações → Informações do Anunciante</strong>.</>
                                     : <>Para substituir: <strong style={{ color: 'var(--text-main)' }}>business.facebook.com → Configurações → Informações do Anunciante</strong>.</>
                                   }
                                 </div>
                               </>
+                            )}
+
+                            {/* Declaração de quem paga pelo anúncio. A Meta exige
+                                esse dado no Brasil, então ele é confirmado por uma
+                                pessoa em vez de ser presumido pelo sistema. */}
+                            {advertiserAutoFallback && accountData.advertiserAccountId && (
+                              <label style={{ display: 'flex', alignItems: 'flex-start', gap: '9px', padding: '11px 13px', borderRadius: '8px', cursor: 'pointer', background: advertiserConfirmed ? 'rgba(16,185,129,0.06)' : 'rgba(245,158,11,0.07)', border: `1px solid ${advertiserConfirmed ? 'rgba(16,185,129,0.28)' : 'rgba(245,158,11,0.38)'}` }}>
+                                <input
+                                  type="checkbox"
+                                  checked={advertiserConfirmed}
+                                  onChange={e => setAdvertiserConfirmed(e.target.checked)}
+                                  style={{ marginTop: '2px', flexShrink: 0 }}
+                                />
+                                <span style={{ fontSize: '11.5px', lineHeight: 1.55, color: advertiserConfirmed ? '#10b981' : '#f59e0b', fontWeight: '600' }}>
+                                  Confirmo que <strong>{accountData.advertiserAccountId}</strong> é o anunciante que paga por estes anúncios. Essa informação vai para a Meta como declaração legal de pagador.
+                                </span>
+                              </label>
                             )}
                             {done && (
                               <div style={{ padding: '8px 12px', background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.25)', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}>
@@ -2928,6 +2882,37 @@ ${rows.map(r => `<tr>
                         {campData.budgetType === 'CBO' && (
                           <Field label="Orçamento Diário CBO (R$)" type="number" value={campData.budget} onChange={e => setCampData({ ...campData, budget: Number(e.target.value) })} width="48%" />
                         )}
+
+                        {/* Declaração obrigatória: a Meta trata categoria errada
+                            como violação e restringe a conta de anúncios. */}
+                        <div style={{ padding: '14px', borderRadius: '10px', border: `1px solid ${specialAdCategory ? 'var(--border-light)' : 'rgba(245,158,11,0.45)'}`, background: specialAdCategory ? 'var(--bg-surface)' : 'rgba(245,158,11,0.06)' }}>
+                          <label style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '8px', display: 'block', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                            Categoria especial do anúncio <span style={{ color: '#ef4444' }}>*</span>
+                          </label>
+                          <select
+                            value={specialAdCategory}
+                            onChange={e => setSpecialAdCategory(e.target.value)}
+                            style={{ width: '100%', padding: '11px 13px', borderRadius: '8px', border: '1px solid var(--border-main)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '13px', outline: 'none', boxSizing: 'border-box' }}
+                          >
+                            <option value="">Selecione — obrigatório antes de publicar</option>
+                            {SPECIAL_AD_CATEGORIES.map(category => (
+                              <option key={category.value} value={category.value}>{category.label}</option>
+                            ))}
+                          </select>
+                          <p style={{ margin: '8px 0 0', fontSize: '11px', lineHeight: 1.55, color: 'var(--text-muted)' }}>
+                            {specialAdCategory
+                              ? SPECIAL_AD_CATEGORIES.find(item => item.value === specialAdCategory)?.hint
+                              : 'Crédito, emprego, moradia, finanças, política e apostas têm regras próprias de segmentação na Meta. Declarar a categoria errada é motivo de restrição da conta de anúncios.'}
+                          </p>
+                          {CATEGORIES_REQUIRING_AUTHORIZATION.includes(specialAdCategory) && (
+                            <div style={{ marginTop: '10px', display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '10px 12px', borderRadius: '8px', background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.32)' }}>
+                              <AlertCircle size={14} color="#f59e0b" style={{ flexShrink: 0, marginTop: '1px' }} />
+                              <span style={{ fontSize: '11px', lineHeight: 1.55, color: '#f59e0b', fontWeight: '600' }}>
+                                Esta categoria exige autorização prévia da Meta para o anunciante. Sem ela, o anúncio é reprovado e as reprovações seguidas pesam contra a conta.
+                              </span>
+                            </div>
+                          )}
+                        </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 14px', background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.25)', borderRadius: '8px' }}>
                           <CheckCircle size={15} color="#10b981" />
                           <span style={{ fontSize: '13px', color: '#10b981', fontWeight: '700' }}>

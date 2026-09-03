@@ -1488,6 +1488,7 @@ export type Database = {
           strategy: 'single' | 'round_robin';
           delay_seconds: number;
           active: boolean;
+          paid_ads_locked: boolean;
           hit_count: number;
           last_accessed_at: string | null;
           created_by: string | null;
@@ -1503,6 +1504,7 @@ export type Database = {
           strategy?: 'single' | 'round_robin';
           delay_seconds?: number;
           active?: boolean;
+          paid_ads_locked?: boolean;
           hit_count?: number;
           last_accessed_at?: string | null;
           created_by?: string | null;
@@ -1518,6 +1520,7 @@ export type Database = {
           strategy?: 'single' | 'round_robin';
           delay_seconds?: number;
           active?: boolean;
+          paid_ads_locked?: boolean;
           hit_count?: number;
           last_accessed_at?: string | null;
           created_by?: string | null;

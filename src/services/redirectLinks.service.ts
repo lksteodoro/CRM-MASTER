@@ -17,6 +17,12 @@ export interface RedirectLinkInput {
   strategy: RedirectLinkRow['strategy'];
   delay_seconds: number;
   active: boolean;
+  /**
+   * Link usado como destino de anúncio pago. Trava destino único e imutável:
+   * a Meta trata destino que muda depois da aprovação como cloaking, o que
+   * derruba a conta de anúncios sem aviso.
+   */
+  paid_ads_locked: boolean;
   destinations: RedirectDestinationInput[];
 }
 
@@ -58,6 +64,16 @@ function normalizedInput(input: RedirectLinkInput): RedirectLinkInput {
     }
     if (parsed.protocol !== 'https:') throw new Error('Os destinos devem começar com https://.');
   });
+  // Link de tráfego pago: um destino, sem rodízio. É o que separa um
+  // encurtador legítimo de um redirecionamento dinâmico aos olhos da Meta.
+  if (input.paid_ads_locked) {
+    if (destinations.length > 1) {
+      throw new Error('Link de anúncio pago aceita apenas um destino. A Meta proíbe destino que muda entre acessos.');
+    }
+    if (input.strategy !== 'single') {
+      throw new Error('Link de anúncio pago não pode usar rodízio de destinos.');
+    }
+  }
   return { ...input, name, slug, destinations };
 }
 

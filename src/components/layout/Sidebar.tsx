@@ -77,6 +77,7 @@ const adminNav: AdminNavItem[] = [
     children: [
       { to: '/agency/ferramentas/meta-ads', label: 'Meta Ads', tool: 'meta_ads' },
       { to: '/agency/ferramentas/meta-ads?criar=1', label: 'Abrir criador de anúncios', tool: 'meta_ads', emphasis: true },
+      { to: '/agency/ferramentas/zpl-pdf', label: 'ZPL para PDF', tool: 'zpl_pdf' },
     ],
   },
 ];

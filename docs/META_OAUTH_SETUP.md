@@ -52,3 +52,51 @@ O login solicita `ads_read`, `ads_management`, `business_management`, `pages_sho
 - O access token é gravado somente em `private.meta_oauth_secrets`; não existe policy de leitura pelo navegador.
 - Apenas administradores iniciam ou reconectam OAuth e liberam ferramentas/perfis.
 - Para revogar o acesso, remova a integração no painel da Meta e marque a conexão como revogada no CRM quando a rotina de validação detectar a falha.
+
+## 6. Proxy da Graph API (obrigatório para publicar)
+
+O criador de anúncios não fala direto com a Meta: toda chamada passa pela Edge
+Function `meta-proxy`, que lê o token da conexão OAuth no servidor. Sem essa
+função publicada, o criador abre em modo demonstração.
+
+1. Aplique a migration `0041_meta_ads_compliance.sql` (cria o bucket
+   `meta-ad-media`, as declarações obrigatórias e as funções que dão acesso ao
+   segredo pelo servidor).
+2. Publique as Edge Functions `meta-proxy` e `meta-deauthorize`.
+3. Garanta que `META_APP_SECRET` e `META_APP_ID` estão nos segredos das duas
+   funções — o `appsecret_proof` e a validação do `signed_request` dependem
+   deles.
+
+O vídeo de anúncio é enviado ao bucket privado `meta-ad-media` e a Meta o baixa
+por URL assinada de uma hora. O arquivo é apagado logo depois.
+
+## 7. Callbacks exigidos pela Meta
+
+Em **Configurações › Básico** do aplicativo, preencha:
+
+```text
+Deauthorize Callback URL:      https://SEU_PROJECT_REF.supabase.co/functions/v1/meta-deauthorize
+Data Deletion Request URL:     https://SEU_PROJECT_REF.supabase.co/functions/v1/meta-deauthorize/delete
+```
+
+Quando alguém remove o app na Meta, a conexão é marcada como revogada e o token
+apagado automaticamente. Sem esses dois endereços a App Review é reprovada.
+
+## 8. O que o operador precisa declarar em cada publicação
+
+Duas informações não podem ser presumidas pelo sistema, e a publicação fica
+bloqueada até que sejam preenchidas:
+
+- **Categoria especial** (crédito, emprego, moradia, finanças, política,
+  apostas ou nenhuma). Declarar errado restringe a conta de anúncios.
+- **Anunciante pagador**, exigido pela Meta no Brasil. Quando o valor é apenas
+  sugerido pelo sistema, o operador precisa confirmar antes de publicar.
+
+## 9. Redirecionador e tráfego pago
+
+Links do redirecionador interno (`/r/slug`) não podem ser usados como destino de
+anúncio, porque podem alternar destinos e ser editados depois da aprovação — a
+Meta trata isso como cloaking. O criador bloqueia esses links no campo de
+destino. Se for realmente necessário usar um, marque a opção **"Este link será
+usado como destino de anúncio pago"** ao criá-lo: o link passa a aceitar um
+único destino, que não pode mais ser alterado.

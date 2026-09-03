@@ -39,8 +39,13 @@ type MetaClientPreset = {
 };
 
 /**
- * Central de Meta Ads da agência. Não lê nem grava token no browser: todo
- * acesso à Graph API usa a Edge Function e credenciais do projeto no servidor.
+ * Central de Meta Ads da agência.
+ *
+ * Nenhum token da Meta é lido ou gravado neste navegador: o criador de anúncios
+ * conversa com a Graph API pela Edge Function `meta-proxy`, que usa a conexão
+ * OAuth da agência guardada no servidor. Os perfis de publicação abaixo são
+ * apenas atalhos de configuração (IDs de conta, página, pixel) e ficam neste
+ * navegador — nenhum deles é credencial.
  */
 export function MetaAdsToolPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -214,7 +219,7 @@ export function MetaAdsToolPage() {
             ))}
           </div>
         )}
-        <p className="mt-4 text-[11px] text-[var(--color-text-faint)]">Perfis e fotos ficam salvos neste navegador. Credenciais e token permanecem protegidos na configuração da API.</p>
+        <p className="mt-4 text-[11px] text-[var(--color-text-faint)]">Os perfis guardam apenas atalhos de configuração (conta, página, pixel) e ficam neste navegador. A credencial da Meta nunca passa por aqui: ela fica no servidor, na conexão feita em Configurações › APIs.</p>
       </div>
       </section>
 

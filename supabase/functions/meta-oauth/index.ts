@@ -29,8 +29,10 @@ Deno.serve(async (request) => {
     if (!state || !code || metaError || !appId || !appSecret) return fail(metaError ?? 'Configuração OAuth inválida.');
 
     const admin = createClient(supabaseUrl, serviceKey);
-    const { data: pending } = await admin.from('meta_oauth_states').select('*').eq('state', state).maybeSingle();
-    await admin.from('meta_oauth_states').delete().eq('state', state);
+    // Consome o state (lê e apaga na mesma transação) — um callback repetido
+    // não encontra mais a linha e não vira uma segunda conexão.
+    const { data: states } = await admin.rpc('meta_oauth_state_consume', { p_state: state });
+    const pending = Array.isArray(states) ? states[0] : states;
     if (!pending || new Date(pending.expires_at).getTime() < Date.now()) return fail('A solicitação expirou. Tente conectar novamente.');
 
     const tokenUrl = new URL('https://graph.facebook.com/v24.0/oauth/access_token');
@@ -42,15 +44,38 @@ Deno.serve(async (request) => {
     const tokenData = await tokenResponse.json();
     if (!tokenResponse.ok || !tokenData.access_token) return fail(tokenData.error?.message ?? 'A Meta não retornou uma credencial válida.');
 
-    const profileResponse = await fetch(`https://graph.facebook.com/v24.0/me?fields=id,name&access_token=${encodeURIComponent(tokenData.access_token)}`);
+    // O código devolve um token de curta duração (~1-2 h). Sem a troca abaixo a
+    // conexão morreria no mesmo dia e o operador veria falhas aleatórias no
+    // meio de uma publicação.
+    const exchangeUrl = new URL('https://graph.facebook.com/v24.0/oauth/access_token');
+    exchangeUrl.searchParams.set('grant_type', 'fb_exchange_token');
+    exchangeUrl.searchParams.set('client_id', appId);
+    exchangeUrl.searchParams.set('client_secret', appSecret);
+    exchangeUrl.searchParams.set('fb_exchange_token', tokenData.access_token);
+    const exchangeData = await fetch(exchangeUrl).then((response) => response.json()).catch(() => ({}));
+    const accessToken: string = exchangeData.access_token ?? tokenData.access_token;
+    const expiresIn = exchangeData.access_token ? exchangeData.expires_in : tokenData.expires_in;
+
+    const profileResponse = await fetch(`https://graph.facebook.com/v24.0/me?fields=id,name&access_token=${encodeURIComponent(accessToken)}`);
     const profileData = await profileResponse.json().catch(() => ({}));
-    const expiresAt = tokenData.expires_in ? new Date(Date.now() + Number(tokenData.expires_in) * 1000).toISOString() : null;
+
+    // Escopos concedidos de verdade, direto da Meta. Guardar isso é o que
+    // permite auditar depois o que o anunciante autorizou e detectar uma
+    // permissão revogada antes de uma publicação falhar.
+    const debugData = await fetch(
+      `https://graph.facebook.com/v24.0/debug_token?input_token=${encodeURIComponent(accessToken)}&access_token=${encodeURIComponent(`${appId}|${appSecret}`)}`,
+    ).then((response) => response.json()).catch(() => ({}));
+    const grantedScopes: string[] = debugData?.data?.scopes ?? [];
+    const expiresAt = debugData?.data?.expires_at
+      ? new Date(Number(debugData.data.expires_at) * 1000).toISOString()
+      : expiresIn ? new Date(Date.now() + Number(expiresIn) * 1000).toISOString() : null;
+
     const { data: connection, error: connectionError } = await admin.from('meta_oauth_connections').upsert({
       organization_id: pending.organization_id, meta_user_id: profileData.id ?? null, meta_user_name: profileData.name ?? null,
-      scopes: [], status: 'CONNECTED', expires_at: expiresAt, last_error: null, connected_by: pending.user_id, connected_at: new Date().toISOString(),
+      scopes: grantedScopes, status: 'CONNECTED', expires_at: expiresAt, last_error: null, connected_by: pending.user_id, connected_at: new Date().toISOString(),
     }, { onConflict: 'organization_id' }).select('id').single();
     if (connectionError || !connection) return fail(connectionError?.message ?? 'Não foi possível salvar a conexão.');
-    const { error: secretError } = await admin.from('meta_oauth_secrets').upsert({ connection_id: connection.id, access_token: tokenData.access_token, updated_at: new Date().toISOString() });
+    const { error: secretError } = await admin.rpc('meta_oauth_secret_set', { p_connection_id: connection.id, p_access_token: accessToken });
     if (secretError) return fail('A conexão foi criada, mas não foi possível guardar a credencial.');
     return Response.redirect(`${appUrl}/agency/configuracoes?aba=apis&meta_oauth=connected`, 302);
   }
@@ -66,7 +91,12 @@ Deno.serve(async (request) => {
   if (!user || profile?.role !== 'ADMIN' || !profile.organization_id) return json({ error: 'forbidden' }, 403);
   const state = crypto.randomUUID();
   const admin = createClient(supabaseUrl, serviceKey);
-  const { error } = await admin.from('meta_oauth_states').insert({ state, organization_id: profile.organization_id, user_id: user.id, expires_at: new Date(Date.now() + 10 * 60_000).toISOString() });
+  const { error } = await admin.rpc('meta_oauth_state_create', {
+    p_state: state,
+    p_organization_id: profile.organization_id,
+    p_user_id: user.id,
+    p_expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+  });
   if (error) return json({ error: error.message }, 400);
   const authUrl = new URL('https://www.facebook.com/v24.0/dialog/oauth');
   authUrl.searchParams.set('client_id', appId);
