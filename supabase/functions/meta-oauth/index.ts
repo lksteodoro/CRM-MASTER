@@ -82,7 +82,6 @@ Deno.serve(async (request) => {
   }
 
   if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
-  if (!appId || !appSecret) return json({ error: 'Meta OAuth não configurado no servidor. Cadastre META_APP_ID e META_APP_SECRET nos segredos da função.' }, 503);
   const authHeader = request.headers.get('Authorization');
   if (!authHeader) return json({ error: 'missing_authorization' }, 401);
   const caller = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: authHeader } } });
@@ -103,27 +102,67 @@ Deno.serve(async (request) => {
     const submitted = String(body.token ?? '').trim();
     if (!submitted) return json({ error: 'Informe o token de acesso.' }, 400);
 
-    const debugResponse = await fetch(
-      `https://graph.facebook.com/v24.0/debug_token?input_token=${encodeURIComponent(submitted)}&access_token=${encodeURIComponent(`${appId}|${appSecret}`)}`,
-    ).then((response) => response.json()).catch(() => null);
-    const info = debugResponse?.data;
+    // ── Validação em cascata ────────────────────────────────────────────────
+    // A ferramenta funciona só com o token, sem exigir App ID e App Secret
+    // cadastrados. Mas quanto menos o servidor sabe sobre o app, menos consegue
+    // provar sobre a origem da credencial — então tentamos, em ordem, do
+    // caminho que verifica mais para o que verifica menos, e devolvemos qual
+    // nível foi alcançado.
+    const debugWith = async (accessToken: string) => {
+      const payload = await fetch(
+        `https://graph.facebook.com/v24.0/debug_token?input_token=${encodeURIComponent(submitted)}&access_token=${encodeURIComponent(accessToken)}`,
+      ).then((response) => response.json()).catch(() => null);
+      if (!payload || payload.error || !payload.data) return null;
+      return payload.data as { app_id?: string; is_valid?: boolean; scopes?: string[]; expires_at?: number; user_id?: string };
+    };
 
-    if (!info || debugResponse?.error) {
-      return json({ error: debugResponse?.error?.message ?? 'A Meta não reconheceu este token.' }, 400);
+    let info: Awaited<ReturnType<typeof debugWith>> = null;
+    let verified: 'app_secret' | 'self' | 'permissions' = 'permissions';
+
+    // 1. App token: o único jeito de conferir a origem com autoridade.
+    if (appId && appSecret) {
+      info = await debugWith(`${appId}|${appSecret}`);
+      if (info) verified = 'app_secret';
     }
-    if (!info.is_valid) {
-      return json({ error: 'Este token está expirado ou foi revogado na Meta.' }, 400);
+    // 2. O próprio token se inspecionando. Funciona para usuário de sistema com
+    //    papel no app e ainda revela o app_id de origem.
+    if (!info) {
+      info = await debugWith(submitted);
+      if (info) verified = 'self';
     }
-    // A checagem que separa uma credencial legítima de uma violação: o token
-    // precisa ter sido emitido para ESTE aplicativo. Um token do Graph API
-    // Explorer, ou de qualquer outro app, pertence ao app que o emitiu — usá-lo
-    // aqui seria uso de credencial de terceiro, proibido pelas Platform Terms.
-    if (String(info.app_id) !== String(appId)) {
-      return json({
-        error: 'Este token foi emitido para outro aplicativo da Meta e não pode ser usado aqui. Gere um token de usuário de sistema na sua Business Manager selecionando o aplicativo desta agência (Configurações do Negócio › Usuários do sistema › Gerar novo token).',
-      }, 400);
+
+    let grantedScopes: string[] = [];
+
+    if (info) {
+      if (info.is_valid === false) {
+        return json({ error: 'Este token está expirado ou foi revogado na Meta.' }, 400);
+      }
+      grantedScopes = info.scopes ?? [];
+      // A checagem que separa uma credencial legítima de uma violação: o token
+      // precisa ter sido emitido para ESTE aplicativo. Um token do Graph API
+      // Explorer, ou de qualquer outro app, pertence ao app que o emitiu —
+      // usá-lo aqui seria uso de credencial de terceiro, proibido pelas
+      // Platform Terms. Só dá para comparar se soubermos qual é o nosso app.
+      if (appId && String(info.app_id) !== String(appId)) {
+        return json({
+          error: 'Este token foi emitido para outro aplicativo da Meta e não pode ser usado aqui. Gere um token de usuário de sistema na sua Business Manager selecionando o aplicativo desta agência (Configurações do Negócio › Usuários do sistema › Gerar novo token).',
+        }, 400);
+      }
+    } else {
+      // 3. Sem debug_token, ainda dá para saber se o token funciona e o que ele
+      //    pode fazer — mas não de onde veio.
+      const permissions = await fetch(
+        `https://graph.facebook.com/v24.0/me/permissions?access_token=${encodeURIComponent(submitted)}`,
+      ).then((response) => response.json()).catch(() => null);
+      if (!permissions || permissions.error) {
+        return json({ error: permissions?.error?.message ?? 'A Meta não reconheceu este token.' }, 400);
+      }
+      grantedScopes = (permissions.data ?? [])
+        .filter((row: { status?: string }) => row.status === 'granted')
+        .map((row: { permission: string }) => row.permission);
+      verified = 'permissions';
     }
-    const grantedScopes: string[] = info.scopes ?? [];
+
     if (!grantedScopes.includes('ads_management')) {
       return json({
         error: `Este token não tem a permissão ads_management, necessária para publicar anúncios. Permissões encontradas: ${grantedScopes.join(', ') || 'nenhuma'}.`,
@@ -133,16 +172,27 @@ Deno.serve(async (request) => {
     const profileData = await fetch(
       `https://graph.facebook.com/v24.0/me?fields=id,name&access_token=${encodeURIComponent(submitted)}`,
     ).then((response) => response.json()).catch(() => ({}));
+    if (profileData?.error) {
+      return json({ error: profileData.error.message ?? 'A Meta recusou este token.' }, 400);
+    }
+
+    // Token de usuário de sistema costuma não expirar: expires_at 0 ou ausente.
+    const expiresAt = info?.expires_at ? new Date(Number(info.expires_at) * 1000).toISOString() : null;
+    // Quando não foi possível conferir de qual aplicativo o token veio, isso
+    // fica registrado na conexão — o administrador precisa saber que essa
+    // verificação não aconteceu, e não descobrir só numa auditoria.
+    const originNote = verified === 'permissions'
+      ? 'Token aceito sem verificação de origem: cadastre META_APP_ID e META_APP_SECRET para que o sistema confirme que a credencial pertence ao aplicativo desta agência.'
+      : null;
 
     const { data: connection, error: connectionError } = await admin.from('meta_oauth_connections').upsert({
       organization_id: profile.organization_id,
-      meta_user_id: profileData.id ?? String(info.user_id ?? '') ?? null,
+      meta_user_id: profileData.id ?? (info?.user_id ? String(info.user_id) : null),
       meta_user_name: profileData.name ?? 'Usuário de sistema',
       scopes: grantedScopes,
       status: 'CONNECTED',
-      // Token de usuário de sistema costuma não expirar: expires_at 0 ou ausente.
-      expires_at: info.expires_at ? new Date(Number(info.expires_at) * 1000).toISOString() : null,
-      last_error: null,
+      expires_at: expiresAt,
+      last_error: originNote,
       credential_source: 'SYSTEM_USER',
       connected_by: user.id,
       connected_at: new Date().toISOString(),
@@ -157,7 +207,9 @@ Deno.serve(async (request) => {
       ok: true,
       name: profileData.name ?? 'Usuário de sistema',
       scopes: grantedScopes,
-      expires_at: info.expires_at ? new Date(Number(info.expires_at) * 1000).toISOString() : null,
+      expires_at: expiresAt,
+      verified,
+      app_id: info?.app_id ?? null,
     });
   }
 
@@ -175,6 +227,14 @@ Deno.serve(async (request) => {
         .eq('id', connection.id);
     }
     return json({ ok: true });
+  }
+
+  // Só o login do Facebook depende do aplicativo estar cadastrado no servidor.
+  // Conectar por token de usuário de sistema funciona sem isso.
+  if (!appId || !appSecret) {
+    return json({
+      error: 'O login da Meta exige META_APP_ID e META_APP_SECRET nos segredos da função. Enquanto isso, conecte pela aba "Token geral" com um token de usuário de sistema.',
+    }, 503);
   }
 
   const state = crypto.randomUUID();

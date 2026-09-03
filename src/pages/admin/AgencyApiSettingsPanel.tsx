@@ -138,7 +138,18 @@ function MetaApiModal({ connection, projects, onClose, onChanged }: { connection
       const saved = await saveMetaSystemUserToken(systemToken.trim());
       setSystemToken('');
       await refreshConnection();
-      setFeedback({ type: 'ok', text: `Credencial validada e guardada no servidor (${saved.name}). Permissões: ${saved.scopes.join(', ')}.` });
+      // O texto diz o que foi realmente confirmado. "Validado" sem qualificação
+      // daria a entender que a origem do token foi checada, o que nem sempre é
+      // possível sem o App Secret cadastrado.
+      const origem = saved.verified === 'app_secret'
+        ? `Origem confirmada: o token pertence ao aplicativo desta agência${saved.app_id ? ` (${saved.app_id})` : ''}.`
+        : saved.verified === 'self'
+          ? `Origem informada pelo próprio token: aplicativo ${saved.app_id ?? 'não identificado'}.`
+          : 'Origem não verificada — cadastre META_APP_ID e META_APP_SECRET nos segredos da função para o sistema confirmar que o token é do aplicativo da agência.';
+      setFeedback({
+        type: saved.verified === 'permissions' ? 'error' : 'ok',
+        text: `Credencial guardada no servidor (${saved.name}). Permissões: ${saved.scopes.join(', ')}. ${origem}`,
+      });
     } catch (error) {
       setFeedback({ type: 'error', text: error instanceof Error ? error.message : 'Não foi possível salvar o token.' });
     } finally { setBusy(false); }
@@ -232,7 +243,10 @@ function MetaApiModal({ connection, projects, onClose, onChanged }: { connection
                 <li>4. Marque as permissões <code className="rounded bg-[var(--color-panel)] px-1">ads_management</code>, <code className="rounded bg-[var(--color-panel)] px-1">ads_read</code>, <code className="rounded bg-[var(--color-panel)] px-1">pages_show_list</code> e <code className="rounded bg-[var(--color-panel)] px-1">business_management</code>.</li>
               </ol>
               <p className="mt-3 text-[11px] leading-5 text-[var(--color-text-faint)]">
-                O token é conferido com a Meta antes de ser aceito. Se tiver sido gerado para outro aplicativo — o caso mais comum é o token do Graph API Explorer — ele é recusado: usar credencial de outro app viola as regras da plataforma e é o tipo de coisa que derruba a conta.
+                O token é conferido com a Meta antes de ser aceito: precisa estar válido e ter <code className="rounded bg-[var(--color-panel)] px-1">ads_management</code>. Se o servidor conseguir identificar o aplicativo de origem e ele for outro — o caso mais comum é o token do Graph API Explorer — o token é recusado, porque usar credencial de outro app viola as regras da plataforma.
+              </p>
+              <p className="mt-2 text-[11px] leading-5 text-[var(--color-text-faint)]">
+                Para que essa checagem de origem seja garantida, cadastre <code className="rounded bg-[var(--color-panel)] px-1">META_APP_ID</code> e <code className="rounded bg-[var(--color-panel)] px-1">META_APP_SECRET</code> nos segredos das Edge Functions. Sem eles a conexão funciona, mas o sistema avisa que não pôde confirmar de onde o token veio.
               </p>
             </div>
 

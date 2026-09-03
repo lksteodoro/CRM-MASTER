@@ -29,7 +29,19 @@ export async function startMetaOAuth(): Promise<string> {
   return data.url;
 }
 
-export type SavedSystemUserToken = { name: string; scopes: string[]; expires_at: string | null };
+export type SavedSystemUserToken = {
+  name: string;
+  scopes: string[];
+  expires_at: string | null;
+  /**
+   * Quanto o servidor conseguiu confirmar sobre a credencial:
+   * `app_secret` — conferido com o app token, prova que o token é deste app;
+   * `self`       — o próprio token se inspecionou e revelou o app de origem;
+   * `permissions`— só deu para ver que funciona e quais permissões tem.
+   */
+  verified: 'app_secret' | 'self' | 'permissions';
+  app_id: string | null;
+};
 
 /**
  * Grava um token de usuário de sistema como credencial da agência.
@@ -59,7 +71,13 @@ export async function saveMetaSystemUserToken(token: string): Promise<SavedSyste
   }
   if (data?.error) throw new Error(data.error);
 
-  return { name: data?.name ?? 'Usuário de sistema', scopes: data?.scopes ?? [], expires_at: data?.expires_at ?? null };
+  return {
+    name: data?.name ?? 'Usuário de sistema',
+    scopes: data?.scopes ?? [],
+    expires_at: data?.expires_at ?? null,
+    verified: data?.verified ?? 'permissions',
+    app_id: data?.app_id ?? null,
+  };
 }
 
 /** Remove a credencial da agência e marca a conexão como revogada. */

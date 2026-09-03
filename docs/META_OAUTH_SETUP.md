@@ -140,3 +140,27 @@ Nada relacionado a publicar. Ela alimenta a leitura de métricas de um projeto
 específico (`meta_integrations`). Se só ela estiver configurada, o criador de
 anúncios continua em modo demonstração — é preciso conectar a agência por uma
 das duas formas acima.
+
+## 11. Operando só com o token, sem App ID e App Secret
+
+O App Secret deixa de ser obrigatório para conectar. A aba **Token geral**
+funciona sozinha; o que muda é o quanto o servidor consegue confirmar sobre a
+credencial. A validação tenta três caminhos, nesta ordem:
+
+| Nível | Como valida | O que confirma |
+|---|---|---|
+| `app_secret` | `debug_token` com o app token | Token válido, permissões **e** que ele pertence a este aplicativo |
+| `self` | `debug_token` com o próprio token | Token válido, permissões e o app de origem informado por ele mesmo |
+| `permissions` | `GET /me/permissions` | Só que o token funciona e quais permissões tem |
+
+Nos dois primeiros níveis, um token emitido por outro aplicativo é recusado. No
+terceiro isso não é possível: a conexão é aceita, a tela mostra o aviso e a
+própria linha da conexão guarda o registro de que a origem não foi verificada.
+
+Em todos os níveis o token continua exigindo `ads_management` e continua
+guardado só no servidor.
+
+**Recomendação:** cadastrar `META_APP_ID` e `META_APP_SECRET` assim que possível.
+Além de garantir a checagem de origem, é o que habilita o `appsecret_proof` (a
+Meta pode exigi-lo se "Require App Secret" estiver ativo no app) e o login por
+OAuth.
