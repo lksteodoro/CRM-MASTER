@@ -241,13 +241,13 @@ Deno.serve(async (req) => {
       if (!isAdmin) return json({ error: 'admin_required' }, 403);
 
       const webhookUrl = `${supabaseUrl}/functions/v1/cs-webhook?secret=${integration.webhook_secret}`;
-      const events = ['MESSAGES_UPSERT', 'GROUPS_UPSERT', 'GROUPS_UPDATE'];
+      const events = ['MESSAGES_UPSERT', 'GROUPS_UPSERT', 'GROUP_UPDATE'];
       const path = `/webhook/set/${encodeURIComponent(integration.instance_name)}`;
 
       // v2 aninha em `webhook`; v1 usa o corpo achatado. Tenta o v2 e cai pro v1.
       let result = await evolutionFetch(integration, path, {
         method: 'POST',
-        body: JSON.stringify({ webhook: { enabled: true, url: webhookUrl, events, byEvents: false } }),
+        body: JSON.stringify({ webhook: { enabled: true, url: webhookUrl, events, webhookByEvents: false, webhookBase64: false } }),
       });
       if (!result.ok) {
         result = await evolutionFetch(integration, path, {

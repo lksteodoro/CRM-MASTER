@@ -194,7 +194,7 @@ Deno.serve(async (req) => {
       return json({ received: true, stored });
     }
 
-    if (event === 'groups.upsert' || event === 'groups.update') {
+    if (event === 'groups.upsert' || event === 'groups.update' || event === 'group.update') {
       const data = payload.data;
       const records: Record<string, unknown>[] = Array.isArray(data)
         ? (data as Record<string, unknown>[])
