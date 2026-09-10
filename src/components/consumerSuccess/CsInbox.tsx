@@ -31,6 +31,37 @@ function initials(name: string | null): string {
     .join('');
 }
 
+function GroupAvatar({
+  name,
+  url,
+  size = 'md',
+}: {
+  name: string | null;
+  url: string | null;
+  size?: 'md' | 'lg';
+}) {
+  const [broken, setBroken] = useState(false);
+  const box = size === 'lg' ? 'h-10 w-10 text-sm' : 'h-9 w-9 text-[11px]';
+  if (url && !broken) {
+    return (
+      <img
+        src={url}
+        alt={name ?? 'Grupo'}
+        loading="lazy"
+        onError={() => setBroken(true)}
+        className={`${box} shrink-0 rounded-full object-cover`}
+      />
+    );
+  }
+  return (
+    <span
+      className={`${box} flex shrink-0 items-center justify-center rounded-full bg-[var(--color-panel-2)] font-semibold text-[var(--color-text-muted)]`}
+    >
+      {initials(name)}
+    </span>
+  );
+}
+
 function timeLabel(iso: string | null): string {
   if (!iso) return '';
   const date = new Date(iso);
@@ -250,9 +281,7 @@ export function CsInbox({
                     : 'hover:bg-[var(--color-panel-2)]'
                 )}
               >
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--color-panel-2)] text-[11px] font-semibold text-[var(--color-text-muted)]">
-                  {initials(group.name)}
-                </span>
+                <GroupAvatar name={group.name} url={group.avatar_url} />
                 <span className="min-w-0 flex-1">
                   <span className="flex items-center justify-between gap-2">
                     <span className="truncate text-sm font-medium text-[var(--color-text)]">
@@ -287,15 +316,18 @@ export function CsInbox({
           ) : (
             <>
               <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] p-3">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-[var(--color-text)]">
-                    {selected.name ?? selected.evolution_jid}
-                  </p>
-                  <p className="text-[11px] text-[var(--color-text-faint)]">
-                    {selected.participant_count
-                      ? `${selected.participant_count} participantes`
-                      : selected.evolution_jid}
-                  </p>
+                <div className="flex min-w-0 items-center gap-3">
+                  <GroupAvatar name={selected.name} url={selected.avatar_url} size="lg" />
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-[var(--color-text)]">
+                      {selected.name ?? selected.evolution_jid}
+                    </p>
+                    <p className="text-[11px] text-[var(--color-text-faint)]">
+                      {selected.participant_count
+                        ? `${selected.participant_count} participantes`
+                        : selected.evolution_jid}
+                    </p>
+                  </div>
                 </div>
 
                 <div className="flex items-center gap-2">
