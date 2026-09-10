@@ -208,45 +208,75 @@ export async function deleteCsScheduledMessage(id: string) {
   if (error) throw error;
 }
 
+export interface CsNextRun {
+  at: Date;
+  /**
+   * O horário já passou e o envio continua pendente — o job pega no próximo
+   * ciclo (roda de 10 em 10 minutos). Acontece quando o agendamento é criado
+   * depois do horário do dia, ou quando o job ficou fora do ar.
+   */
+  overdue: boolean;
+}
+
+function isoDateOf(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(
+    date.getDate()
+  ).padStart(2, '0')}`;
+}
+
+/** Hoje cai nessa recorrência? Só a data — o horário é checado por fora. */
+function matchesDate(schedule: CsScheduledMessageRow, date: Date): boolean {
+  const iso = isoDateOf(date);
+  if (iso < schedule.starts_on) return false;
+  if (schedule.ends_on && iso > schedule.ends_on) return false;
+
+  switch (schedule.recurrence) {
+    case 'daily':
+      return true;
+    case 'weekly':
+      return date.getDay() === schedule.weekday;
+    case 'monthly':
+      return date.getDate() === schedule.day_of_month;
+    case 'once':
+      return iso === schedule.starts_on;
+  }
+}
+
+function occurrenceOn(schedule: CsScheduledMessageRow, date: Date): Date {
+  const [hours, minutes] = schedule.send_time.split(':').map(Number);
+  const occurrence = new Date(date);
+  occurrence.setHours(hours ?? 0, minutes ?? 0, 0, 0);
+  return occurrence;
+}
+
 /**
- * Próximo envio de um agendamento, no fuso de São Paulo.
+ * Próximo envio de um agendamento.
  *
- * O envio de verdade é decidido na Edge Function `cs-run-scheduled`; aqui é só
- * a leitura pro usuário saber quando cai. O cron roda de 10 em 10 minutos,
- * então o horário exibido pode atrasar alguns minutos na prática.
+ * Espelha a decisão da Edge Function `cs-run-scheduled`: uma ocorrência que já
+ * passou mas ainda não foi enviada continua na fila, então aqui ela aparece
+ * como pendente (`overdue`) em vez de sumir como se não fosse mais sair.
  */
-export function nextCsRun(schedule: CsScheduledMessageRow, from = new Date()): Date | null {
+export function nextCsRun(
+  schedule: CsScheduledMessageRow,
+  from = new Date()
+): CsNextRun | null {
   if (!schedule.active) return null;
 
-  const [hours, minutes] = schedule.send_time.split(':').map(Number);
+  // Ocorrência de hoje ainda pendente conta como próxima, mesmo atrasada.
+  if (matchesDate(schedule, from)) {
+    const today = occurrenceOn(schedule, from);
+    const alreadySent =
+      schedule.last_sent_at && new Date(schedule.last_sent_at).getTime() >= today.getTime();
+    if (!alreadySent) return { at: today, overdue: today.getTime() < from.getTime() };
+  }
 
-  for (let dayOffset = 0; dayOffset <= 366; dayOffset += 1) {
+  if (schedule.recurrence === 'once') return null;
+
+  for (let dayOffset = 1; dayOffset <= 366; dayOffset += 1) {
     const candidate = new Date(from);
     candidate.setDate(candidate.getDate() + dayOffset);
-    candidate.setHours(hours ?? 0, minutes ?? 0, 0, 0);
-
-    if (candidate.getTime() < from.getTime()) continue;
-
-    const isoDate = `${candidate.getFullYear()}-${String(candidate.getMonth() + 1).padStart(2, '0')}-${String(
-      candidate.getDate()
-    ).padStart(2, '0')}`;
-
-    if (isoDate < schedule.starts_on) continue;
-    if (schedule.ends_on && isoDate > schedule.ends_on) return null;
-
-    switch (schedule.recurrence) {
-      case 'daily':
-        return candidate;
-      case 'weekly':
-        if (candidate.getDay() === schedule.weekday) return candidate;
-        break;
-      case 'monthly':
-        if (candidate.getDate() === schedule.day_of_month) return candidate;
-        break;
-      case 'once':
-        if (isoDate === schedule.starts_on) return schedule.last_sent_at ? null : candidate;
-        break;
-    }
+    if (schedule.ends_on && isoDateOf(candidate) > schedule.ends_on) return null;
+    if (matchesDate(schedule, candidate)) return { at: occurrenceOn(schedule, candidate), overdue: false };
   }
 
   return null;

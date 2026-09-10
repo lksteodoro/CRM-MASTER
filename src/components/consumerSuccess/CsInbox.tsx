@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2, RefreshCw, Search, Send, Star, History } from 'lucide-react';
+import { Loader2, RefreshCw, Search, Send, Star, History, Wifi, WifiOff } from 'lucide-react';
 import clsx from 'clsx';
+import { supabase } from '../../integrations/supabase/client';
 import {
   fetchCsHistory,
   listCsMessages,
@@ -14,7 +15,12 @@ import type {
   CsMessageRow,
 } from '../../integrations/supabase/database.types';
 
-const POLL_MS = 8_000;
+/**
+ * Rede de segurança: a resposta do cliente chega pelo Realtime no instante em
+ * que o webhook grava. Este intervalo longo só cobre o caso do socket cair sem
+ * o cliente perceber.
+ */
+const FALLBACK_POLL_MS = 30_000;
 
 function initials(name: string | null): string {
   if (!name) return '#';
@@ -57,7 +63,10 @@ export function CsInbox({
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [onlyManaged, setOnlyManaged] = useState(true);
+  const [live, setLive] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const selectedIdRef = useRef<string | null>(null);
+  selectedIdRef.current = selectedId;
 
   const selected = groups.find((group) => group.id === selectedId) ?? null;
 
@@ -91,15 +100,50 @@ export function CsInbox({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
 
-  // A Evolution entrega por webhook; aqui só relemos o que já caiu no banco.
+  /**
+   * Tempo real: o webhook grava a mensagem e o Postgres avisa a tela na hora.
+   * A assinatura é montada uma vez e usa `selectedIdRef` pra saber qual grupo
+   * está aberto — assim trocar de conversa não derruba e reabre o socket.
+   */
+  useEffect(() => {
+    const channel = supabase
+      .channel('cs-inbox')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'cs_messages' },
+        (payload) => {
+          const message = payload.new as CsMessageRow;
+          if (message.group_id === selectedIdRef.current) {
+            setMessages((current) =>
+              current.some((item) => item.id === message.id) ? current : [...current, message]
+            );
+            void markCsGroupRead(message.group_id).catch(() => undefined);
+          }
+          onGroupsChanged();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'cs_groups' },
+        () => onGroupsChanged()
+      )
+      .subscribe((status) => setLive(status === 'SUBSCRIBED'));
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Rede de segurança pra queda de socket — o caminho normal é o Realtime acima.
   useEffect(() => {
     const timer = setInterval(() => {
-      if (selectedId) void loadMessages(selectedId);
+      if (selectedIdRef.current) void loadMessages(selectedIdRef.current);
       onGroupsChanged();
-    }, POLL_MS);
+    }, FALLBACK_POLL_MS);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId]);
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: 'end' });
@@ -287,19 +331,20 @@ export function CsInbox({
                     <Star size={14} fill={selected.is_managed ? 'currentColor' : 'none'} />
                   </button>
 
-                  <button
-                    onClick={() => void handleImportHistory()}
-                    disabled={importing}
-                    title="Importar as últimas mensagens direto da Evolution"
-                    className="flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-2 py-1.5 text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] disabled:opacity-50"
-                  >
-                    {importing ? (
-                      <Loader2 size={13} className="animate-spin" />
-                    ) : (
-                      <History size={13} />
+                  <span
+                    title={
+                      live
+                        ? 'As respostas do cliente aparecem aqui sozinhas, na hora'
+                        : 'Conexão ao vivo caiu — a tela recarrega sozinha a cada 30s'
+                    }
+                    className={clsx(
+                      'flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px]',
+                      live ? 'text-emerald-300' : 'text-amber-300'
                     )}
-                    Histórico
-                  </button>
+                  >
+                    {live ? <Wifi size={13} /> : <WifiOff size={13} />}
+                    {live ? 'Ao vivo' : 'Reconectando'}
+                  </span>
 
                   <button
                     onClick={() => void loadMessages(selected.id, true)}
@@ -316,10 +361,27 @@ export function CsInbox({
                   <p className="text-xs text-[var(--color-text-faint)]">Carregando mensagens...</p>
                 )}
                 {!loadingMessages && messages.length === 0 && (
-                  <p className="text-xs text-[var(--color-text-faint)]">
-                    Nenhuma mensagem registrada ainda. As novas chegam sozinhas pelo webhook — pra
-                    trazer o que já existe no grupo, use "Histórico".
-                  </p>
+                  <div className="mx-auto mt-8 max-w-sm rounded-2xl border border-dashed border-[var(--color-border)] p-5 text-center">
+                    <p className="text-xs text-[var(--color-text-muted)]">
+                      Ainda não há mensagens registradas neste grupo. Daqui pra frente, tudo que o
+                      cliente responder aparece aqui sozinho — não precisa atualizar nada.
+                    </p>
+                    <button
+                      onClick={() => void handleImportHistory()}
+                      disabled={importing}
+                      className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-3 py-2 text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] disabled:opacity-50"
+                    >
+                      {importing ? (
+                        <Loader2 size={13} className="animate-spin" />
+                      ) : (
+                        <History size={13} />
+                      )}
+                      Trazer conversas antigas do WhatsApp
+                    </button>
+                    <p className="mt-2 text-[10px] text-[var(--color-text-faint)]">
+                      Só uma vez, pra puxar o que já estava no grupo antes da conexão.
+                    </p>
+                  </div>
                 )}
 
                 {messages.map((message) => (

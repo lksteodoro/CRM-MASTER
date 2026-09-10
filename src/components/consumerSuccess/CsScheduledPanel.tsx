@@ -71,8 +71,9 @@ function cadenceLabel(schedule: CsScheduledMessageRow): string {
 function nextRunLabel(schedule: CsScheduledMessageRow): string {
   if (!schedule.active) return 'Pausada';
   const next = nextCsRun(schedule);
-  if (!next) return 'Sem próximo envio';
-  return next.toLocaleString('pt-BR', {
+  if (!next) return schedule.last_sent_at ? 'Já enviada' : 'Sem próximo envio';
+  if (next.overdue) return 'Sai no próximo ciclo';
+  return next.at.toLocaleString('pt-BR', {
     day: '2-digit',
     month: '2-digit',
     hour: '2-digit',
