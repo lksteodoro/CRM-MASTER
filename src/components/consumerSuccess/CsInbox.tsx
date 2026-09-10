@@ -10,7 +10,6 @@ import {
   updateCsGroup,
 } from '../../services/consumerSuccess.service';
 import type {
-  ClientRow,
   CsGroupRow,
   CsMessageRow,
 } from '../../integrations/supabase/database.types';
@@ -51,7 +50,7 @@ export function CsInbox({
   onGroupsChanged,
 }: {
   groups: CsGroupRow[];
-  clients: ClientRow[];
+  clients: { id: string; name: string }[];
   onGroupsChanged: () => void;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);

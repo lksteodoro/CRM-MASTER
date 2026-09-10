@@ -11,7 +11,6 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useAuth } from '../../providers/AuthProvider';
-import { listClients } from '../../services/clients.service';
 import {
   getCsConfig,
   listCsGroups,
@@ -19,9 +18,11 @@ import {
   setCsWebhook,
   syncCsGroups,
   testCsConnection,
+  listCsClients,
   type CsConfig,
+  type CsClient,
 } from '../../services/consumerSuccess.service';
-import type { ClientRow, CsGroupRow } from '../../integrations/supabase/database.types';
+import type { CsGroupRow } from '../../integrations/supabase/database.types';
 import { CsInbox } from '../../components/consumerSuccess/CsInbox';
 import { CsScheduledPanel } from '../../components/consumerSuccess/CsScheduledPanel';
 import { ErrorView, LoadingView } from '../../components/ui/StateView';
@@ -254,7 +255,7 @@ export function ConsumerSuccessPage() {
   const { isAdmin } = useAuth();
   const [config, setConfig] = useState<CsConfig | null>(null);
   const [groups, setGroups] = useState<CsGroupRow[]>([]);
-  const [clients, setClients] = useState<ClientRow[]>([]);
+  const [clients, setClients] = useState<CsClient[]>([]);
   const [tab, setTab] = useState<Tab>('inbox');
   const [showSettings, setShowSettings] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -272,7 +273,7 @@ export function ConsumerSuccessPage() {
     setLoading(true);
     setError(null);
     try {
-      const [configResult, clientRows] = await Promise.all([getCsConfig(), listClients()]);
+      const [configResult, clientRows] = await Promise.all([getCsConfig(), listCsClients()]);
       setConfig(configResult);
       setClients(clientRows);
       if (configResult.configured) await loadGroups();
@@ -374,7 +375,7 @@ export function ConsumerSuccessPage() {
           ) : tab === 'inbox' ? (
             <CsInbox groups={groups} clients={clients} onGroupsChanged={() => void loadGroups()} />
           ) : (
-            <CsScheduledPanel groups={groups.filter((group) => group.is_managed)} />
+            <CsScheduledPanel groups={groups.filter((group) => group.is_managed)} clients={clients} />
           )}
         </>
       )}

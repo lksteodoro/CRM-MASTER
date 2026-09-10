@@ -1,470 +1,84 @@
 import { useEffect, useState } from 'react';
-import { CalendarClock, Loader2, Pencil, Plus, Power, Trash2, X } from 'lucide-react';
-import clsx from 'clsx';
-import {
-  createCsScheduledMessage,
-  csRecurrenceLabels,
-  csWeekdayLabels,
-  deleteCsScheduledMessage,
-  listCsScheduledMessages,
-  nextCsRun,
-  updateCsScheduledMessage,
-  type CsRecurrence,
-  type CsScheduleInput,
-} from '../../services/consumerSuccess.service';
+import { ArrowDown, ArrowUp, CalendarClock, Check, Loader2, Pencil, Plus, Power, Search, Send, Trash2, Users, X } from 'lucide-react';
+import { createCsScheduledMessage, csEligible, csError, csRecipients, csRecurrenceLabels, csWeekdayLabels, deleteCsScheduledMessage, enqueueCsSchedule, formatCsDate, getCsServerNow, listCsScheduledMessages, previewCsBody, updateCsScheduledMessage, type CsClient, type CsScheduleInput } from '../../services/consumerSuccess.service';
 import type { CsGroupRow, CsScheduledMessageRow } from '../../integrations/supabase/database.types';
 import { LoadingView } from '../ui/StateView';
 
-const inputClass =
-  'w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-faint)] focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/45';
-const labelClass = 'mb-1 block text-xs font-medium text-[var(--color-text-muted)]';
-
-function todayIso(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+export const csInput = 'w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2.5 text-sm text-[var(--color-text)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]';
+export const csButton = 'inline-flex items-center justify-center gap-2 rounded-xl border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-muted)] hover:bg-[var(--color-panel-2)] disabled:opacity-40';
+const primary = 'inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--color-brand)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-40';
+const section = 'space-y-4 rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] p-5';
+export function CsNotice({ children, success = false }: { children: React.ReactNode; success?: boolean }) { return <div role={success ? 'status' : 'alert'} className={`rounded-xl border p-3 text-sm ${success ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-400' : 'border-amber-500/25 bg-amber-500/10 text-amber-400'}`}>{children}</div>; }
+function dateInSaoPaulo(iso: string) { return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso)); }
+function initialForm(schedule: CsScheduledMessageRow | null, serverNow: string): CsScheduleInput {
+  return schedule ? { ...schedule, recipient_mode: schedule.recipient_mode || 'single', group_ids: schedule.group_ids || [], variants: schedule.variants?.length ? schedule.variants : [schedule.body], rotation_mode: schedule.rotation_mode || 'sequential', weekdays: schedule.weekdays?.length ? schedule.weekdays : [schedule.weekday ?? 1], send_time: schedule.send_time.slice(0, 5) } : { group_id: null, recipient_mode: 'single', group_ids: [], title: '', body: '', variants: [''], rotation_mode: 'sequential', recurrence: 'weekly', send_time: '09:00', weekday: 1, weekdays: [1], day_of_month: null, starts_on: dateInSaoPaulo(serverNow), ends_on: null, active: true };
 }
-
-function emptyForm(groupId = ''): CsScheduleInput {
-  return {
-    group_id: groupId,
-    title: '',
-    body: '',
-    recurrence: 'weekly',
-    send_time: '09:00',
-    weekday: 1,
-    day_of_month: null,
-    starts_on: todayIso(),
-    ends_on: null,
-    active: true,
-  };
-}
-
-function toForm(schedule: CsScheduledMessageRow): CsScheduleInput {
-  return {
-    group_id: schedule.group_id,
-    title: schedule.title,
-    body: schedule.body,
-    recurrence: schedule.recurrence,
-    send_time: schedule.send_time.slice(0, 5),
-    weekday: schedule.weekday,
-    day_of_month: schedule.day_of_month,
-    starts_on: schedule.starts_on,
-    ends_on: schedule.ends_on,
-    active: schedule.active,
-  };
-}
-
-function cadenceLabel(schedule: CsScheduledMessageRow): string {
-  const time = schedule.send_time.slice(0, 5);
-  switch (schedule.recurrence) {
-    case 'daily':
-      return `Todo dia às ${time}`;
-    case 'weekly':
-      return `Toda ${csWeekdayLabels[schedule.weekday ?? 0]} às ${time}`;
-    case 'monthly':
-      return `Todo dia ${schedule.day_of_month} às ${time}`;
-    case 'once':
-      return `Uma vez em ${new Date(`${schedule.starts_on}T00:00:00`).toLocaleDateString('pt-BR')} às ${time}`;
-  }
-}
-
-function nextRunLabel(schedule: CsScheduledMessageRow): string {
-  if (!schedule.active) return 'Pausada';
-  const next = nextCsRun(schedule);
-  if (!next) return schedule.last_sent_at ? 'Já enviada' : 'Sem próximo envio';
-  if (next.overdue) return 'Sai no próximo ciclo';
-  return next.at.toLocaleString('pt-BR', {
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
-function ScheduleModal({
-  groups,
-  schedule,
-  onClose,
-  onSaved,
-}: {
-  groups: CsGroupRow[];
-  schedule: CsScheduledMessageRow | null;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [form, setForm] = useState<CsScheduleInput>(
-    schedule ? toForm(schedule) : emptyForm(groups[0]?.id ?? '')
-  );
+export function CsScheduleEditor({ groups, clients, schedule, serverNow, onClose, onSaved }: { groups: CsGroupRow[]; clients: CsClient[]; schedule: CsScheduledMessageRow | null; serverNow: string; onClose: () => void; onSaved: () => void }) {
+  const [form, setForm] = useState(() => initialForm(schedule, serverNow));
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  function set<K extends keyof CsScheduleInput>(key: K, value: CsScheduleInput[K]) {
-    setForm((current) => ({ ...current, [key]: value }));
-  }
-
-  function changeRecurrence(recurrence: CsRecurrence) {
-    setForm((current) => ({
-      ...current,
-      recurrence,
-      // Cada recorrência usa um campo diferente; zera o que não vale mais pra
-      // não salvar um dia da semana em uma mensagem mensal, por exemplo.
-      weekday: recurrence === 'weekly' ? (current.weekday ?? 1) : null,
-      day_of_month: recurrence === 'monthly' ? (current.day_of_month ?? 1) : null,
-    }));
-  }
-
-  async function handleSave() {
-    if (!form.group_id) return setError('Escolha o grupo que vai receber.');
-    if (!form.title.trim()) return setError('Dá um nome pra essa mensagem.');
-    if (!form.body.trim()) return setError('Escreva o texto que vai ser enviado.');
-
-    setSaving(true);
-    setError(null);
+  const [error, setError] = useState('');
+  const [query, setQuery] = useState('');
+  const [previewId, setPreviewId] = useState('');
+  const [previewIndex, setPreviewIndex] = useState(0);
+  const recipients = csRecipients(form, groups, clients);
+  const previewGroup = recipients.find(g => g.id === previewId) || recipients[0];
+  function set<K extends keyof CsScheduleInput>(key: K, value: CsScheduleInput[K]) { setForm(current => ({ ...current, [key]: value })); }
+  useEffect(() => { const handler = (event: KeyboardEvent) => { if (event.key === 'Escape' && !saving) onClose(); }; window.addEventListener('keydown', handler); const previous = document.body.style.overflow; document.body.style.overflow = 'hidden'; return () => { window.removeEventListener('keydown', handler); document.body.style.overflow = previous; }; }, [onClose, saving]);
+  async function save() {
+    if (!form.title.trim()) return setError('Dê um nome à programação.');
+    if (form.variants.some(v => !v.trim())) return setError('Escreva todas as abordagens ou remova as vazias.');
+    if (form.recipient_mode !== 'all_active' && !recipients.length) return setError('Selecione pelo menos um grupo habilitado.');
+    if (!form.starts_on || !form.send_time) return setError('Defina a data inicial e o horário.');
+    if (form.ends_on && form.ends_on < form.starts_on) return setError('A data final deve ser igual ou posterior à inicial.');
+    if (form.recurrence === 'weekly' && !form.weekdays.length) return setError('Escolha pelo menos um dia da semana.');
+    const unsupported = form.variants.join(' ').match(/{{\s*(?!(?:saudacao|cliente|grupo)\s*}})[^}]+}}/g);
+    if (unsupported) return setError('Use apenas os campos {{saudacao}}, {{cliente}} e {{grupo}}.');
+    setSaving(true); setError('');
     try {
-      const payload: CsScheduleInput = {
-        ...form,
-        title: form.title.trim(),
-        body: form.body.trim(),
-        ends_on: form.ends_on || null,
-      };
-      if (schedule) await updateCsScheduledMessage(schedule.id, payload);
-      else await createCsScheduledMessage(payload);
+      const payload: CsScheduleInput = { title: form.title.trim(), body: form.variants[0].trim(), variants: form.variants.map(v => v.trim()), rotation_mode: form.rotation_mode, recipient_mode: form.recipient_mode, group_id: form.recipient_mode === 'single' ? form.group_id : null, group_ids: form.recipient_mode === 'selected' ? form.group_ids : [], recurrence: form.recurrence, send_time: form.send_time, starts_on: form.starts_on, ends_on: form.recurrence === 'once' ? null : form.ends_on || null, active: form.active, weekday: form.recurrence === 'weekly' ? form.weekdays[0] : null, weekdays: form.recurrence === 'weekly' ? form.weekdays : [], day_of_month: form.recurrence === 'monthly' ? form.day_of_month ?? 1 : null };
+      if (schedule) await updateCsScheduledMessage(schedule.id, payload); else await createCsScheduledMessage(payload);
       onSaved();
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Não foi possível salvar.');
-      setSaving(false);
-    }
+    } catch (caught) { setError(csError(caught)); } finally { setSaving(false); }
   }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-      <div className="flex max-h-[88vh] w-full max-w-xl flex-col overflow-y-auto rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] p-6 shadow-2xl">
-        <div className="mb-5 flex items-center justify-between">
-          <h3 className="text-lg font-semibold text-[var(--color-text)]">
-            {schedule ? 'Editar mensagem periódica' : 'Nova mensagem periódica'}
-          </h3>
-          <button
-            onClick={onClose}
-            aria-label="Fechar"
-            className="rounded-lg p-1 text-[var(--color-text-faint)] hover:bg-[var(--color-panel-2)] hover:text-[var(--color-text)]"
-          >
-            <X size={18} />
-          </button>
-        </div>
-
-        <div className="flex flex-col gap-3">
-          <div>
-            <label className={labelClass}>Grupo</label>
-            <select
-              className={inputClass}
-              value={form.group_id}
-              onChange={(event) => set('group_id', event.target.value)}
-            >
-              <option value="">Selecione...</option>
-              {groups.map((group) => (
-                <option key={group.id} value={group.id}>
-                  {group.name ?? group.evolution_jid}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className={labelClass}>Nome interno</label>
-            <input
-              className={inputClass}
-              value={form.title}
-              onChange={(event) => set('title', event.target.value)}
-              placeholder="Ex: Resumo semanal de resultados"
-            />
-          </div>
-
-          <div>
-            <label className={labelClass}>Mensagem</label>
-            <textarea
-              className={inputClass}
-              rows={5}
-              value={form.body}
-              onChange={(event) => set('body', event.target.value)}
-              placeholder="Texto que vai ser enviado no grupo"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className={labelClass}>Frequência</label>
-              <select
-                className={inputClass}
-                value={form.recurrence}
-                onChange={(event) => changeRecurrence(event.target.value as CsRecurrence)}
-              >
-                {Object.entries(csRecurrenceLabels).map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className={labelClass}>Horário</label>
-              <input
-                type="time"
-                className={inputClass}
-                value={form.send_time}
-                onChange={(event) => set('send_time', event.target.value)}
-              />
-            </div>
-          </div>
-
-          {form.recurrence === 'weekly' && (
-            <div>
-              <label className={labelClass}>Dia da semana</label>
-              <select
-                className={inputClass}
-                value={form.weekday ?? 1}
-                onChange={(event) => set('weekday', Number(event.target.value))}
-              >
-                {csWeekdayLabels.map((label, index) => (
-                  <option key={label} value={index}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          {form.recurrence === 'monthly' && (
-            <div>
-              <label className={labelClass}>Dia do mês</label>
-              <input
-                type="number"
-                min={1}
-                max={28}
-                className={inputClass}
-                value={form.day_of_month ?? 1}
-                onChange={(event) =>
-                  set('day_of_month', Math.min(28, Math.max(1, Number(event.target.value))))
-                }
-              />
-              <p className="mt-1 text-[11px] text-[var(--color-text-faint)]">
-                Até 28 pra cair todo mês, inclusive fevereiro.
-              </p>
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className={labelClass}>Começa em</label>
-              <input
-                type="date"
-                className={inputClass}
-                value={form.starts_on}
-                onChange={(event) => set('starts_on', event.target.value)}
-              />
-            </div>
-            <div>
-              <label className={labelClass}>Termina em (opcional)</label>
-              <input
-                type="date"
-                className={inputClass}
-                value={form.ends_on ?? ''}
-                onChange={(event) => set('ends_on', event.target.value || null)}
-              />
-            </div>
-          </div>
-
-          <label className="flex items-center gap-2 text-sm text-[var(--color-text-muted)]">
-            <input
-              type="checkbox"
-              checked={form.active}
-              onChange={(event) => set('active', event.target.checked)}
-            />
-            Ativa (envia automaticamente)
-          </label>
-
-          {error && <p className="text-xs text-[var(--color-bad)]">{error}</p>}
-        </div>
-
-        <div className="mt-5 flex justify-end gap-2">
-          <button
-            onClick={onClose}
-            className="rounded-xl px-4 py-2.5 text-sm font-medium text-[var(--color-text-muted)] hover:bg-[var(--color-panel-2)]"
-          >
-            Cancelar
-          </button>
-          <button
-            onClick={() => void handleSave()}
-            disabled={saving}
-            className="flex items-center gap-1.5 rounded-xl bg-[var(--color-brand)] px-4 py-2.5 text-sm font-medium text-white disabled:opacity-50"
-          >
-            {saving && <Loader2 size={14} className="animate-spin" />}
-            Salvar
-          </button>
-        </div>
-      </div>
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-2 backdrop-blur-sm sm:p-5"><div role="dialog" aria-modal="true" aria-labelledby="cs-editor-title" className="flex max-h-[95dvh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg)] shadow-2xl">
+    <header className="flex items-center justify-between border-b border-[var(--color-border)] px-5 py-4"><div><p className="text-xs font-medium uppercase tracking-widest text-[var(--color-brand)]">Relacionamento programado</p><h2 id="cs-editor-title" className="mt-1 text-xl font-semibold">{schedule ? 'Editar programação' : 'Nova programação'}</h2></div><button aria-label="Fechar editor" disabled={saving} onClick={onClose} className={csButton}><X size={18} /></button></header>
+    <div className="grid gap-5 overflow-y-auto p-4 sm:p-5 lg:grid-cols-[minmax(0,1fr)_300px]">
+    <div className="min-w-0 space-y-5">
+      <label className="block space-y-2 text-sm font-medium">Nome da programação<input autoFocus className={csInput} value={form.title} onChange={e => set('title', e.target.value)} placeholder="Ex.: Presença e acompanhamento semanal" maxLength={160} /></label>
+      <section className={section}><h3 className="flex items-center gap-2 font-semibold"><span className="text-[var(--color-brand)]">01</span> Quem vai receber</h3>
+        <div className="grid gap-2 sm:grid-cols-3">{([['single', 'Um grupo'], ['selected', 'Vários grupos'], ['all_active', 'Clientes ativos']] as const).map(([mode, label]) => <button key={mode} aria-pressed={form.recipient_mode === mode} className={`${csButton} ${form.recipient_mode === mode ? 'border-[var(--color-brand)] bg-[var(--color-brand)]/10 text-[var(--color-brand)]' : ''}`} onClick={() => set('recipient_mode', mode)}>{label}</button>)}</div>
+        {form.recipient_mode === 'single' ? <label className="block text-sm">Grupo<select className={`${csInput} mt-2`} value={form.group_id || ''} onChange={e => set('group_id', e.target.value)}><option value="">Selecione um grupo</option>{groups.map(g => <option key={g.id} value={g.id} disabled={!csEligible(g, clients)}>{g.name || g.evolution_jid}{!csEligible(g, clients) ? ' · indisponível' : ''}</option>)}</select></label> : form.recipient_mode === 'selected' ? <><input aria-label="Buscar grupos destinatários" className={csInput} placeholder="Buscar grupo ou cliente..." value={query} onChange={e => setQuery(e.target.value)} /><div className="max-h-48 space-y-1 overflow-y-auto">{groups.filter(g => `${g.name} ${clients.find(c => c.id === g.client_id)?.name || ''}`.toLowerCase().includes(query.toLowerCase())).map(g => <label key={g.id} className="flex items-center gap-3 rounded-lg p-2 text-sm hover:bg-[var(--color-panel-2)]"><input type="checkbox" checked={form.group_ids.includes(g.id)} disabled={!csEligible(g, clients) && !form.group_ids.includes(g.id)} onChange={e => set('group_ids', e.target.checked ? [...form.group_ids, g.id] : form.group_ids.filter(id => id !== g.id))} /><span className="min-w-0 flex-1 truncate">{g.name || g.evolution_jid}<small className="ml-2 text-[var(--color-text-muted)]">{!csEligible(g, clients) ? 'Indisponível' : clients.find(c => c.id === g.client_id)?.name}</small></span></label>)}</div></> : <p className="text-sm leading-relaxed text-[var(--color-text-muted)]">Todos os grupos habilitados e vinculados a clientes ativos. A seleção é atualizada a cada envio: novos clientes entram e clientes desativados saem.</p>}
+        <p className="flex items-center gap-2 text-sm text-[var(--color-brand)]"><Users size={16} />{recipients.length} grupo(s) elegível(is) agora</p><p className="text-xs text-[var(--color-text-muted)]">Grupos pausados, não acompanhados ou de clientes inativos não recebem automações.</p>
+      </section>
+      <section className={section}><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold"><span className="mr-2 text-[var(--color-brand)]">02</span> Abordagens</h3><span className="text-xs text-[var(--color-text-muted)]">{form.variants.length} texto(s) no rodízio</span></div><p className="text-sm text-[var(--color-text-muted)]">Escreva diferentes formas de iniciar a conversa, com o tom da sua agência.</p>
+        {form.variants.map((text, index) => <div key={index} className="space-y-2 rounded-xl border border-[var(--color-border)] p-3"><div className="flex items-center justify-between"><label htmlFor={`approach-${index}`} className="text-xs font-semibold">Abordagem {index + 1}</label><div className="flex gap-1"><button aria-label={`Mover abordagem ${index + 1} para cima`} disabled={index === 0} className={csButton} onClick={() => { const list = [...form.variants]; [list[index - 1], list[index]] = [list[index], list[index - 1]]; set('variants', list); }}><ArrowUp size={13} /></button><button aria-label={`Mover abordagem ${index + 1} para baixo`} disabled={index === form.variants.length - 1} className={csButton} onClick={() => { const list = [...form.variants]; [list[index + 1], list[index]] = [list[index], list[index + 1]]; set('variants', list); }}><ArrowDown size={13} /></button><button aria-label={`Remover abordagem ${index + 1}`} disabled={form.variants.length === 1} className={csButton} onClick={() => { set('variants', form.variants.filter((_, i) => i !== index)); setPreviewIndex(0); }}><Trash2 size={13} /></button></div></div><textarea id={`approach-${index}`} className={csInput} rows={3} value={text} onChange={e => set('variants', form.variants.map((v, i) => i === index ? e.target.value : v))} placeholder="Olá, {{saudacao}}! Escreva sua mensagem aqui." /><div className="flex flex-wrap gap-2">{['saudacao', 'cliente', 'grupo'].map(token => <button key={token} className="rounded-md bg-[var(--color-panel-2)] px-2 py-1 text-xs text-[var(--color-brand)]" onClick={() => set('variants', form.variants.map((v, i) => i === index ? v + `{{${token}}}` : v))}>{`{{${token}}}`}</button>)}</div></div>)}
+        <button className={csButton} onClick={() => set('variants', [...form.variants, ''])}><Plus size={16} />Adicionar abordagem</button>
+        <label className="block space-y-2 text-sm">Ordem de envio<select className={csInput} value={form.rotation_mode} onChange={e => set('rotation_mode', e.target.value as CsScheduleInput['rotation_mode'])}><option value="sequential">Sequencial — segue a ordem acima</option><option value="random">Aleatória — alterna as abordagens</option></select></label><p className="text-xs text-[var(--color-text-muted)]">Com textos distintos, a mesma abordagem não se repete em envios consecutivos. O rodízio é individual por grupo.</p>
+      </section>
+      <section className={section}><h3 className="font-semibold"><span className="mr-2 text-[var(--color-brand)]">03</span> Quando enviar</h3><div className="grid gap-3 sm:grid-cols-2"><label className="space-y-2 text-sm">Frequência<select className={csInput} value={form.recurrence} onChange={e => set('recurrence', e.target.value as CsScheduleInput['recurrence'])}>{Object.entries(csRecurrenceLabels).map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></label><label className="space-y-2 text-sm">Horário de São Paulo<input type="time" className={csInput} value={form.send_time} onChange={e => set('send_time', e.target.value)} /></label></div>
+        {form.recurrence === 'weekly' && <div className="flex flex-wrap gap-2">{csWeekdayLabels.map((day,index) => <button key={day} aria-label={day} aria-pressed={form.weekdays.includes(index)} className={`${csButton} ${form.weekdays.includes(index) ? 'border-[var(--color-brand)] text-[var(--color-brand)] bg-[var(--color-brand)]/10' : ''}`} onClick={() => set('weekdays', form.weekdays.includes(index) ? form.weekdays.filter(d => d !== index) : [...form.weekdays,index].sort())}>{day.slice(0,3)}</button>)}</div>}
+        {form.recurrence === 'monthly' && <label className="block space-y-2 text-sm">Dia do mês<select className={csInput} value={form.day_of_month ?? 1} onChange={e => set('day_of_month', Number(e.target.value))}><option value={0}>Último dia do mês</option>{Array.from({length:31},(_,i) => <option key={i+1} value={i+1}>Dia {i+1}</option>)}</select><span className="block text-xs text-[var(--color-text-muted)]">Se o mês for mais curto, envia no último dia.</span></label>}
+        <div className="grid gap-3 sm:grid-cols-2"><label className="space-y-2 text-sm">{form.recurrence === 'once' ? 'Data do envio' : 'Começa em'}<input type="date" className={csInput} value={form.starts_on} onChange={e => set('starts_on',e.target.value)} /></label>{form.recurrence !== 'once' && <label className="space-y-2 text-sm">Termina em (opcional)<input type="date" className={csInput} min={form.starts_on} value={form.ends_on || ''} onChange={e => set('ends_on',e.target.value || null)} /></label>}</div><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.active} onChange={e => set('active',e.target.checked)} />Ativar os envios programados</label><p className="text-xs leading-relaxed text-[var(--color-text-muted)]">Desmarque para salvar como pausada e usar apenas o envio imediato. O servidor verifica a fila a cada minuto; a entrega também depende da conexão WhatsApp.</p>
+      </section>
     </div>
-  );
+    <aside className="space-y-4 lg:sticky lg:top-0 lg:self-start"><div className={`${section} border-emerald-500/20`}><p className="text-xs font-semibold uppercase tracking-widest text-emerald-400">Prévia da mensagem</p><label className="block space-y-2 text-xs">Destinatário<select className={csInput} value={previewGroup?.id || ''} onChange={e => setPreviewId(e.target.value)}>{!recipients.length && <option value="">Selecione um grupo elegível</option>}{recipients.map(g => <option key={g.id} value={g.id}>{g.name || g.evolution_jid}</option>)}</select></label><label className="block space-y-2 text-xs">Abordagem<select className={csInput} value={previewIndex} onChange={e => setPreviewIndex(Number(e.target.value))}>{form.variants.map((_,i) => <option key={i} value={i}>Abordagem {i+1}</option>)}</select></label><div className="min-h-32 whitespace-pre-wrap break-words rounded-2xl rounded-tr-sm bg-emerald-500/10 p-4 text-sm leading-relaxed">{previewCsBody(form.variants[previewIndex] || '', previewGroup, clients) || 'Sua mensagem personalizada aparece aqui.'}</div><p className="text-xs leading-relaxed text-[var(--color-text-muted)]">A saudação é definida em Grupos. Sem saudação, usamos “pessoal”. A prévia mostra o texto selecionado; o próximo envio respeita o rodízio de cada grupo.</p></div><div className="rounded-xl bg-[var(--color-panel)] p-4 text-xs leading-relaxed text-[var(--color-text-muted)]"><CalendarClock size={18} className="mb-2 text-[var(--color-brand)]" />Relógio do servidor<br /><span className="font-medium text-[var(--color-text)]">{formatCsDate(serverNow)}</span><br />America/Sao_Paulo</div></aside>
+    </div><footer className="space-y-3 border-t border-[var(--color-border)] bg-[var(--color-panel)] p-4">{error && <CsNotice>{error}</CsNotice>}<div className="flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-[var(--color-text-muted)]">Salve e use “Enviar agora” na lista para um envio imediato.</p><div className="flex gap-2"><button disabled={saving} onClick={onClose} className={csButton}>Cancelar</button><button disabled={saving} onClick={() => void save()} className={primary}>{saving ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}Salvar programação</button></div></div></footer>
+  </div></div>;
 }
-
-export function CsScheduledPanel({ groups }: { groups: CsGroupRow[] }) {
-  const [schedules, setSchedules] = useState<CsScheduledMessageRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [editing, setEditing] = useState<CsScheduledMessageRow | null | undefined>(undefined);
-  const [mutatingId, setMutatingId] = useState<string | null>(null);
-
-  async function load() {
-    setLoading(true);
-    try {
-      setSchedules(await listCsScheduledMessages());
-      setError(null);
-    } catch (caught) {
-      setError(
-        caught instanceof Error ? caught.message : 'Não foi possível carregar as mensagens programadas.'
-      );
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    void load();
-  }, []);
-
-  async function toggleActive(schedule: CsScheduledMessageRow) {
-    setMutatingId(schedule.id);
-    try {
-      await updateCsScheduledMessage(schedule.id, { active: !schedule.active });
-      await load();
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Não foi possível alterar.');
-    } finally {
-      setMutatingId(null);
-    }
-  }
-
-  async function remove(schedule: CsScheduledMessageRow) {
-    setMutatingId(schedule.id);
-    try {
-      await deleteCsScheduledMessage(schedule.id);
-      await load();
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Não foi possível excluir.');
-    } finally {
-      setMutatingId(null);
-    }
-  }
-
-  const groupById = new Map(groups.map((group) => [group.id, group]));
-
-  if (loading) return <LoadingView label="Carregando mensagens programadas..." />;
-
-  return (
-    <div className="flex flex-col gap-4">
-      {error && (
-        <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
-          {error}
-        </div>
-      )}
-
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-[var(--color-text-muted)]">
-          O sistema envia sozinho no horário. A verificação roda a cada 10 minutos, então pode sair
-          alguns minutos depois do horário marcado.
-        </p>
-        <button
-          onClick={() => setEditing(null)}
-          disabled={groups.length === 0}
-          className="flex shrink-0 items-center gap-1.5 rounded-xl bg-[var(--color-brand)] px-4 py-2.5 text-sm font-medium text-white disabled:opacity-50"
-        >
-          <Plus size={15} />
-          Nova mensagem
-        </button>
-      </div>
-
-      {schedules.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-[var(--color-border)] p-8 text-center text-sm text-[var(--color-text-muted)]">
-          Nenhuma mensagem periódica ainda. Crie a primeira pra manter os grupos aquecidos sem
-          depender de lembrete.
-        </div>
-      ) : (
-        <div className="flex flex-col gap-2">
-          {schedules.map((schedule) => {
-            const group = groupById.get(schedule.group_id);
-            return (
-              <article
-                key={schedule.id}
-                className={clsx(
-                  'flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-[var(--color-panel)] p-4',
-                  schedule.active
-                    ? 'border-[var(--color-border)]'
-                    : 'border-[var(--color-border-soft)] opacity-60'
-                )}
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-semibold text-[var(--color-text)]">
-                    {schedule.title}
-                  </p>
-                  <p className="truncate text-xs text-[var(--color-text-muted)]">
-                    {group?.name ?? 'Grupo removido'} · {cadenceLabel(schedule)}
-                  </p>
-                  <p className="mt-1 line-clamp-2 text-[11px] text-[var(--color-text-faint)]">
-                    {schedule.body}
-                  </p>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <span className="flex items-center gap-1.5 rounded-lg bg-[var(--color-panel-2)] px-2 py-1.5 text-[11px] text-[var(--color-text-muted)]">
-                    <CalendarClock size={12} />
-                    {nextRunLabel(schedule)}
-                  </span>
-
-                  <button
-                    onClick={() => void toggleActive(schedule)}
-                    disabled={mutatingId === schedule.id}
-                    title={schedule.active ? 'Pausar' : 'Ativar'}
-                    className={clsx(
-                      'rounded-lg border p-1.5 transition-colors disabled:opacity-50',
-                      schedule.active
-                        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
-                        : 'border-[var(--color-border)] text-[var(--color-text-faint)]'
-                    )}
-                  >
-                    <Power size={14} />
-                  </button>
-                  <button
-                    onClick={() => setEditing(schedule)}
-                    title="Editar"
-                    className="rounded-lg border border-[var(--color-border)] p-1.5 text-[var(--color-text-faint)] hover:text-[var(--color-text)]"
-                  >
-                    <Pencil size={14} />
-                  </button>
-                  <button
-                    onClick={() => void remove(schedule)}
-                    disabled={mutatingId === schedule.id}
-                    title="Excluir"
-                    className="rounded-lg border border-[var(--color-border)] p-1.5 text-[var(--color-bad)] hover:bg-[var(--color-bad-soft)] disabled:opacity-50"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      )}
-
-      {editing !== undefined && (
-        <ScheduleModal
-          groups={groups}
-          schedule={editing}
-          onClose={() => setEditing(undefined)}
-          onSaved={async () => {
-            setEditing(undefined);
-            await load();
-          }}
-        />
-      )}
-    </div>
-  );
+function cadence(schedule: CsScheduledMessageRow) { return `${csRecurrenceLabels[schedule.recurrence]}${schedule.recurrence === 'weekly' ? ` · ${(schedule.weekdays || [schedule.weekday ?? 1]).map(d => csWeekdayLabels[d]?.slice(0,3)).join(', ')}` : schedule.recurrence === 'monthly' ? ` · ${schedule.day_of_month === 0 ? 'último dia' : `dia ${schedule.day_of_month}`}` : ''} · ${schedule.send_time.slice(0,5)}`; }
+export function CsScheduledPanel({ groups, clients }: { groups: CsGroupRow[]; clients: CsClient[] }) {
+  const [schedules,setSchedules] = useState<CsScheduledMessageRow[]>([]); const [serverNow,setServerNow] = useState(''); const [loading,setLoading] = useState(true); const [error,setError] = useState(''); const [notice,setNotice] = useState(''); const [editing,setEditing] = useState<CsScheduledMessageRow | null | undefined>(); const [busy,setBusy] = useState(''); const [query,setQuery] = useState(''); const [filter,setFilter] = useState('all'); const [confirm,setConfirm] = useState<{ schedule: CsScheduledMessageRow; action: 'send'|'delete' } | null>(null);
+  async function load() { try { const [rows,now] = await Promise.all([listCsScheduledMessages(),getCsServerNow()]); setSchedules(rows); setServerNow(now); setError(''); } catch(e) { setError(csError(e)); } finally { setLoading(false); } }
+  useEffect(() => { void load(); const timer = setInterval(() => void load(),30000); return () => clearInterval(timer); },[]);
+  async function mutate(schedule: CsScheduledMessageRow, action: 'toggle'|'send'|'delete') { setBusy(schedule.id); setNotice(''); try { if(action === 'toggle') await updateCsScheduledMessage(schedule.id,{active:!schedule.active}); if(action === 'delete') await deleteCsScheduledMessage(schedule.id); if(action === 'send') { const count = await enqueueCsSchedule(schedule.id); setNotice(count ? `${count} envio(s) adicionado(s) à fila. Acompanhe cada grupo no Histórico.` : 'Nenhum novo envio: a programação já foi enfileirada neste minuto ou não há grupos elegíveis.'); } setConfirm(null); await load(); } catch(e) { setError(csError(e)); } finally { setBusy(''); } }
+  if(loading) return <LoadingView label="Carregando programações e relógio do servidor..." />;
+  const rows = schedules.filter(s => s.title.toLowerCase().includes(query.toLowerCase()) && (filter === 'all' || s.active === (filter === 'active')));
+  return <div className="space-y-5">{error && <CsNotice>{error}<button className="ml-3 underline" onClick={() => void load()}>Tentar novamente</button></CsNotice>}{notice && <CsNotice success>{notice}</CsNotice>}
+    <div className="flex flex-wrap items-start justify-between gap-4"><div><h2 className="text-xl font-semibold">Presença com consistência</h2><p className="mt-1 text-sm text-[var(--color-text-muted)]">Uma programação, vários grupos e abordagens com a sua voz.</p></div><button className={primary} disabled={!serverNow} onClick={() => setEditing(null)}><Plus size={17} />Nova programação</button></div>
+    <div className="flex flex-wrap gap-3"><div className="relative min-w-48 flex-1"><Search size={16} className="absolute left-3 top-3 text-[var(--color-text-muted)]" /><input aria-label="Buscar programações" className={`${csInput} pl-9`} value={query} onChange={e => setQuery(e.target.value)} placeholder="Buscar programação..." /></div><select aria-label="Filtrar programações" className={`${csInput} w-auto`} value={filter} onChange={e => setFilter(e.target.value)}><option value="all">Todas ({schedules.length})</option><option value="active">Ativas ({schedules.filter(s => s.active).length})</option><option value="paused">Pausadas</option></select></div>
+    {!rows.length ? <div className="rounded-2xl border border-dashed border-[var(--color-border)] px-5 py-12 text-center"><CalendarClock className="mx-auto mb-3 text-[var(--color-brand)]" size={30} /><h3 className="font-semibold">{schedules.length ? 'Nenhuma programação encontrada' : 'Seu próximo contato começa aqui'}</h3><p className="mx-auto mt-2 max-w-md text-sm text-[var(--color-text-muted)]">{schedules.length ? 'Ajuste a busca ou o filtro.' : 'Selecione os grupos, escreva suas abordagens e escolha quando manter contato.'}</p></div> : <div className="grid gap-4 xl:grid-cols-2">{rows.map(s => { const count = csRecipients(s,groups,clients).length; return <article key={s.id} className={`${section} flex flex-col`}><div className="flex items-start justify-between gap-3"><h3 className="font-semibold">{s.title}</h3><span className={`shrink-0 rounded-full px-2.5 py-1 text-xs ${s.active ? 'bg-emerald-500/10 text-emerald-400' : 'bg-[var(--color-panel-2)] text-[var(--color-text-muted)]'}`}>{s.active ? 'Ativa' : 'Pausada'}</span></div><div className="flex flex-wrap gap-x-4 gap-y-2 text-xs text-[var(--color-text-muted)]"><span className="flex items-center gap-1"><Users size={14} />{s.recipient_mode === 'all_active' ? 'Todos os clientes ativos' : `${count} grupo(s) elegível(is)`}</span><span>{s.variants?.length || 1} abordagem(ns) · {s.rotation_mode === 'random' ? 'aleatório' : 'sequencial'}</span></div><p className="line-clamp-2 min-h-10 text-sm leading-relaxed text-[var(--color-text-muted)]">{s.variants?.[0] || s.body}</p><div className="rounded-xl bg-[var(--color-bg)] p-3 text-xs"><p className="flex items-center gap-2"><CalendarClock size={14} />{cadence(s)} · São Paulo</p><p className="mt-2 text-[var(--color-text-muted)]">Próximo: {s.active && s.next_run_at ? `${formatCsDate(s.next_run_at)}${s.next_run_at <= serverNow ? ' · aguardando processamento' : ''}` : s.active ? 'Sem próxima ocorrência' : 'programação pausada'}</p></div><div className="mt-auto flex flex-wrap gap-2 border-t border-[var(--color-border)] pt-3"><button className={csButton} disabled={busy === s.id || !count} onClick={() => setConfirm({schedule:s,action:'send'})}><Send size={14} />Enviar agora ({count})</button><button aria-label={`Editar ${s.title}`} className={csButton} disabled={busy === s.id} onClick={() => setEditing(s)}><Pencil size={14} /></button><button aria-label={`${s.active ? 'Pausar' : 'Ativar'} ${s.title}`} title={s.active ? 'Pausar' : 'Ativar'} className={csButton} disabled={busy === s.id} onClick={() => void mutate(s,'toggle')}><Power size={14} /></button><button aria-label={`Excluir ${s.title}`} className={csButton} disabled={busy === s.id} onClick={() => setConfirm({schedule:s,action:'delete'})}><Trash2 size={14} /></button></div></article>; })}</div>}
+    {serverNow && <p className="text-xs text-[var(--color-text-muted)]">Servidor: {formatCsDate(serverNow)} · São Paulo · Atualização da tela a cada 30 segundos.</p>}
+    {editing !== undefined && <CsScheduleEditor groups={groups} clients={clients} schedule={editing} serverNow={serverNow} onClose={() => setEditing(undefined)} onSaved={() => { setEditing(undefined); setNotice('Programação salva.'); void load(); }} />}
+    {confirm && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"><div role="dialog" aria-modal="true" aria-labelledby="cs-confirm-title" className={`${section} w-full max-w-md`}><h3 id="cs-confirm-title" className="font-semibold">{confirm.action === 'send' ? 'Enviar esta programação agora?' : 'Excluir programação?'}</h3><p className="text-sm text-[var(--color-text-muted)]">{confirm.schedule.title}</p><p className="text-sm">{confirm.action === 'send' ? `${csRecipients(confirm.schedule,groups,clients).length} grupo(s) elegível(is) agora. Cada um receberá a próxima abordagem do seu rodízio. A recorrência permanece configurada.` : 'Os próximos envios serão cancelados. O histórico já registrado será preservado.'}</p><div className="flex justify-end gap-2"><button disabled={!!busy} className={csButton} onClick={() => setConfirm(null)}>Cancelar</button><button disabled={!!busy} className={primary} onClick={() => void mutate(confirm.schedule,confirm.action)}>{busy ? <Loader2 className="animate-spin" size={16} /> : null}{confirm.action === 'send' ? 'Adicionar à fila agora' : 'Excluir'}</button></div></div></div>}
+  </div>;
 }

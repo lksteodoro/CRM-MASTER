@@ -1,6 +1,7 @@
 import { supabase } from '../integrations/supabase/client';
 import type {
   CsGroupRow,
+  CsDeliveryRow,
   CsMessageRow,
   CsScheduledMessageRow,
 } from '../integrations/supabase/database.types';
@@ -98,7 +99,7 @@ export async function listCsGroups(): Promise<CsGroupRow[]> {
 
 export async function updateCsGroup(
   id: string,
-  patch: { is_managed?: boolean; client_id?: string | null }
+  patch: { is_managed?: boolean; client_id?: string | null; greeting?: string; automation_paused?: boolean }
 ): Promise<CsGroupRow> {
   const { data, error } = await supabase
     .from('cs_groups')
@@ -156,7 +157,12 @@ export const csWeekdayLabels = [
 ];
 
 export interface CsScheduleInput {
-  group_id: string;
+  group_id: string | null;
+  recipient_mode: 'single' | 'selected' | 'all_active';
+  group_ids: string[];
+  variants: string[];
+  rotation_mode: 'sequential' | 'random';
+  weekdays: number[];
   title: string;
   body: string;
   recurrence: CsRecurrence;
@@ -182,7 +188,7 @@ export async function createCsScheduledMessage(
 ): Promise<CsScheduledMessageRow> {
   const { data, error } = await supabase
     .from('cs_scheduled_messages')
-    .insert(input)
+    .insert({ ...input, next_run_at: null })
     .select('*')
     .single();
   if (error) throw error;
@@ -208,76 +214,44 @@ export async function deleteCsScheduledMessage(id: string) {
   if (error) throw error;
 }
 
-export interface CsNextRun {
-  at: Date;
-  /**
-   * O horário já passou e o envio continua pendente — o job pega no próximo
-   * ciclo (roda de 10 em 10 minutos). Acontece quando o agendamento é criado
-   * depois do horário do dia, ou quando o job ficou fora do ar.
-   */
-  overdue: boolean;
+
+export function csError(error: unknown): string {
+  const message = typeof error === 'object' && error && 'message' in error ? String(error.message) : 'Não foi possível concluir a operação.';
+  if (/schema cache|does not exist|could not find/i.test(message)) return 'A atualização do Consumer Success ainda não está instalada no servidor. Solicite a aplicação das migrações e a atualização das funções antes de usar as programações.';
+  return message;
+}
+export async function getCsServerNow(): Promise<string> {
+  const { data, error } = await supabase.rpc('cs_server_now');
+  if (error) throw error;
+  return data;
+}
+export async function listCsClients(): Promise<CsClient[]> {
+  const { data, error } = await supabase.rpc('cs_list_clients');
+  if (error) throw error;
+  return data ?? [];
+}
+export async function enqueueCsSchedule(id: string): Promise<number> {
+  const { data, error } = await supabase.rpc('cs_send_schedule_now', { p_schedule_id: id });
+  if (error) throw error;
+  return data;
+}
+export async function listCsDeliveries(): Promise<CsDeliveryRow[]> {
+  const { data, error } = await supabase.from('cs_deliveries').select('*').order('occurrence_at', { ascending: false }).limit(200);
+  if (error) throw error;
+  return data ?? [];
+}
+export function formatCsDate(iso: string): string {
+  return new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(iso));
+}
+export function csEligible(group: CsGroupRow, clients: CsClient[], allActive = false): boolean {
+  return group.is_managed && !group.automation_paused && (group.client_id ? clients.some(c => c.id === group.client_id && c.status === 'ACTIVE') : !allActive);
+}
+export function csRecipients(input: Pick<CsScheduleInput, 'recipient_mode' | 'group_id' | 'group_ids'>, groups: CsGroupRow[], clients: CsClient[]) {
+  return groups.filter(g => csEligible(g, clients, input.recipient_mode === 'all_active') && (input.recipient_mode === 'all_active' || (input.recipient_mode === 'single' ? g.id === input.group_id : input.group_ids.includes(g.id))));
+}
+export function previewCsBody(body: string, group: CsGroupRow | undefined, clients: CsClient[]): string {
+  const client = clients.find(c => c.id === group?.client_id);
+  return body.replace(/{{\s*(saudacao|cliente|grupo)\s*}}/g, (_, key: string) => ({ saudacao: group?.greeting?.trim() || 'pessoal', cliente: client?.name || 'pessoal', grupo: group?.name || 'pessoal' })[key] || 'pessoal');
 }
 
-function isoDateOf(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(
-    date.getDate()
-  ).padStart(2, '0')}`;
-}
-
-/** Hoje cai nessa recorrência? Só a data — o horário é checado por fora. */
-function matchesDate(schedule: CsScheduledMessageRow, date: Date): boolean {
-  const iso = isoDateOf(date);
-  if (iso < schedule.starts_on) return false;
-  if (schedule.ends_on && iso > schedule.ends_on) return false;
-
-  switch (schedule.recurrence) {
-    case 'daily':
-      return true;
-    case 'weekly':
-      return date.getDay() === schedule.weekday;
-    case 'monthly':
-      return date.getDate() === schedule.day_of_month;
-    case 'once':
-      return iso === schedule.starts_on;
-  }
-}
-
-function occurrenceOn(schedule: CsScheduledMessageRow, date: Date): Date {
-  const [hours, minutes] = schedule.send_time.split(':').map(Number);
-  const occurrence = new Date(date);
-  occurrence.setHours(hours ?? 0, minutes ?? 0, 0, 0);
-  return occurrence;
-}
-
-/**
- * Próximo envio de um agendamento.
- *
- * Espelha a decisão da Edge Function `cs-run-scheduled`: uma ocorrência que já
- * passou mas ainda não foi enviada continua na fila, então aqui ela aparece
- * como pendente (`overdue`) em vez de sumir como se não fosse mais sair.
- */
-export function nextCsRun(
-  schedule: CsScheduledMessageRow,
-  from = new Date()
-): CsNextRun | null {
-  if (!schedule.active) return null;
-
-  // Ocorrência de hoje ainda pendente conta como próxima, mesmo atrasada.
-  if (matchesDate(schedule, from)) {
-    const today = occurrenceOn(schedule, from);
-    const alreadySent =
-      schedule.last_sent_at && new Date(schedule.last_sent_at).getTime() >= today.getTime();
-    if (!alreadySent) return { at: today, overdue: today.getTime() < from.getTime() };
-  }
-
-  if (schedule.recurrence === 'once') return null;
-
-  for (let dayOffset = 1; dayOffset <= 366; dayOffset += 1) {
-    const candidate = new Date(from);
-    candidate.setDate(candidate.getDate() + dayOffset);
-    if (schedule.ends_on && isoDateOf(candidate) > schedule.ends_on) return null;
-    if (matchesDate(schedule, candidate)) return { at: occurrenceOn(schedule, candidate), overdue: false };
-  }
-
-  return null;
-}
+export interface CsClient { id: string; name: string; status: string }

@@ -1592,9 +1592,9 @@ export type Database = {
       };
 
       cs_groups: {
-        Row: { id: string; organization_id: string; evolution_jid: string; name: string | null; description: string | null; avatar_url: string | null; participant_count: number | null; client_id: string | null; is_managed: boolean; last_message_at: string | null; last_message_preview: string | null; unread_count: number; created_at: string; updated_at: string };
-        Insert: { id?: string; organization_id?: string; evolution_jid: string; name?: string | null; description?: string | null; avatar_url?: string | null; participant_count?: number | null; client_id?: string | null; is_managed?: boolean; last_message_at?: string | null; last_message_preview?: string | null; unread_count?: number; created_at?: string; updated_at?: string };
-        Update: { name?: string | null; description?: string | null; avatar_url?: string | null; participant_count?: number | null; client_id?: string | null; is_managed?: boolean; last_message_at?: string | null; last_message_preview?: string | null; unread_count?: number };
+        Row: { id: string; organization_id: string; evolution_jid: string; name: string | null; description: string | null; avatar_url: string | null; participant_count: number | null; client_id: string | null; is_managed: boolean; greeting: string; automation_paused: boolean; last_message_at: string | null; last_message_preview: string | null; unread_count: number; created_at: string; updated_at: string };
+        Insert: { id?: string; organization_id?: string; evolution_jid: string; name?: string | null; description?: string | null; avatar_url?: string | null; participant_count?: number | null; client_id?: string | null; is_managed?: boolean; greeting?: string; automation_paused?: boolean; last_message_at?: string | null; last_message_preview?: string | null; unread_count?: number; created_at?: string; updated_at?: string };
+        Update: { name?: string | null; description?: string | null; avatar_url?: string | null; participant_count?: number | null; client_id?: string | null; is_managed?: boolean; greeting?: string; automation_paused?: boolean; last_message_at?: string | null; last_message_preview?: string | null; unread_count?: number };
         Relationships: [];
       };
       cs_messages: {
@@ -1604,14 +1604,24 @@ export type Database = {
         Relationships: [];
       };
       cs_scheduled_messages: {
-        Row: { id: string; organization_id: string; created_by: string; group_id: string; title: string; body: string; media_url: string | null; recurrence: 'once' | 'daily' | 'weekly' | 'monthly'; send_time: string; weekday: number | null; day_of_month: number | null; starts_on: string; ends_on: string | null; active: boolean; last_sent_at: string | null; created_at: string; updated_at: string };
-        Insert: { id?: string; organization_id?: string; created_by?: string; group_id: string; title: string; body: string; media_url?: string | null; recurrence: 'once' | 'daily' | 'weekly' | 'monthly'; send_time?: string; weekday?: number | null; day_of_month?: number | null; starts_on?: string; ends_on?: string | null; active?: boolean; last_sent_at?: string | null; created_at?: string; updated_at?: string };
-        Update: { group_id?: string; title?: string; body?: string; media_url?: string | null; recurrence?: 'once' | 'daily' | 'weekly' | 'monthly'; send_time?: string; weekday?: number | null; day_of_month?: number | null; starts_on?: string; ends_on?: string | null; active?: boolean; last_sent_at?: string | null };
+        Row: { id: string; organization_id: string; created_by: string; group_id: string | null; recipient_mode: 'single' | 'selected' | 'all_active'; group_ids: string[]; variants: string[]; rotation_mode: 'sequential' | 'random'; weekdays: number[]; next_run_at: string | null; title: string; body: string; media_url: string | null; recurrence: 'once' | 'daily' | 'weekly' | 'monthly'; send_time: string; weekday: number | null; day_of_month: number | null; starts_on: string; ends_on: string | null; active: boolean; last_sent_at: string | null; created_at: string; updated_at: string };
+        Insert: { id?: string; organization_id?: string; created_by?: string; group_id: string | null; recipient_mode: 'single' | 'selected' | 'all_active'; group_ids: string[]; variants: string[]; rotation_mode: 'sequential' | 'random'; weekdays: number[]; next_run_at: string | null; title: string; body: string; media_url?: string | null; recurrence: 'once' | 'daily' | 'weekly' | 'monthly'; send_time?: string; weekday?: number | null; day_of_month?: number | null; starts_on?: string; ends_on?: string | null; active?: boolean; last_sent_at?: string | null; created_at?: string; updated_at?: string };
+        Update: { group_id?: string | null; recipient_mode?: 'single' | 'selected' | 'all_active'; group_ids?: string[]; variants?: string[]; rotation_mode?: 'sequential' | 'random'; weekdays?: number[]; next_run_at?: string | null; title?: string; body?: string; media_url?: string | null; recurrence?: 'once' | 'daily' | 'weekly' | 'monthly'; send_time?: string; weekday?: number | null; day_of_month?: number | null; starts_on?: string; ends_on?: string | null; active?: boolean; last_sent_at?: string | null };
+        Relationships: [];
+      };
+      cs_deliveries: {
+        Row: { id: string; organization_id: string; schedule_id: string | null; group_id: string; occurrence_at: string; status: 'pending' | 'processing' | 'sent' | 'failed' | 'uncertain' | 'skipped'; body: string | null; variant_index: number | null; attempts: number; available_at: string; claimed_at: string | null; sent_at: string | null; error: string | null; evolution_message_id: string | null };
+        Insert: never;
+        Update: never;
         Relationships: [];
       };
     };
     Views: { [_ in never]: never };
     Functions: {
+      cs_server_now: { Args: Record<string, never>; Returns: string };
+      cs_send_schedule_now: { Args: { p_schedule_id: string }; Returns: number };
+      cs_list_clients: { Args: Record<string, never>; Returns: Array<{id: string; name: string; status: string}> };
+
       import_leads_batch: {
         Args: { p_project_id: string; p_rows: Json };
         Returns: Array<{ inserted_count: number; updated_count: number; invalid_count: number }>;
@@ -1679,3 +1689,5 @@ export type InfobipTemplateSubmissionRow = Tables['infobip_template_submissions'
 export type CsGroupRow = Tables['cs_groups']['Row'];
 export type CsMessageRow = Tables['cs_messages']['Row'];
 export type CsScheduledMessageRow = Tables['cs_scheduled_messages']['Row'];
+
+export type CsDeliveryRow = Tables['cs_deliveries']['Row'];
