@@ -38,6 +38,7 @@ import { AdminUsersPage } from './pages/admin/AdminUsersPage';
 import { AuditLogPage } from './pages/admin/AuditLogPage';
 import { MetaAdsToolPage } from './pages/admin/MetaAdsToolPage';
 import { ZplPdfToolPage } from './pages/admin/ZplPdfToolPage';
+import { ConsumerSuccessPage } from './pages/admin/ConsumerSuccessPage';
 import { AgencySettingsPage } from './pages/admin/AgencySettingsPage';
 import { ClientDisparoPortalPage } from './pages/client/ClientDisparoPortalPage';
 
@@ -77,6 +78,7 @@ function App() {
             <Route element={<AgencyToolRoute tool="disparo.report" />}><Route element={<AdminShell />}><Route path="/agency/disparo/relatorio" element={<DisparoDashboardPage reportOnly />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="meta_ads" />}><Route element={<AdminShell />}><Route path="/agency/ferramentas/meta-ads" element={<MetaAdsToolPage />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="zpl_pdf" />}><Route element={<AdminShell />}><Route path="/agency/ferramentas/zpl-pdf" element={<ZplPdfToolPage />} /></Route></Route>
+            <Route element={<AgencyToolRoute tool="consumer_success" />}><Route element={<AdminShell />}><Route path="/agency/ferramentas/consumer-success" element={<ConsumerSuccessPage />} /></Route></Route>
 
             {/* Projeto — o id na URL é a fonte de verdade */}
             <Route path="/project/:projectId" element={<ProjectLayout />}>

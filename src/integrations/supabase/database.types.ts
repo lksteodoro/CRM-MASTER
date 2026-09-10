@@ -1590,6 +1590,25 @@ export type Database = {
         Update: { label?: string; file_name?: string | null; file_url?: string | null; lead_count?: number | null; infobip_tag_id?: string | null; infobip_tag_name?: string | null; infobip_tag_people_count?: number | null; template_id?: string; template_name?: string; template_language?: string; position?: number; status?: 'DRAFT' | 'READY' | 'SENDING' | 'FINISHED' | 'FAILED' };
         Relationships: [];
       };
+
+      cs_groups: {
+        Row: { id: string; organization_id: string; evolution_jid: string; name: string | null; description: string | null; avatar_url: string | null; participant_count: number | null; client_id: string | null; is_managed: boolean; last_message_at: string | null; last_message_preview: string | null; unread_count: number; created_at: string; updated_at: string };
+        Insert: { id?: string; organization_id?: string; evolution_jid: string; name?: string | null; description?: string | null; avatar_url?: string | null; participant_count?: number | null; client_id?: string | null; is_managed?: boolean; last_message_at?: string | null; last_message_preview?: string | null; unread_count?: number; created_at?: string; updated_at?: string };
+        Update: { name?: string | null; description?: string | null; avatar_url?: string | null; participant_count?: number | null; client_id?: string | null; is_managed?: boolean; last_message_at?: string | null; last_message_preview?: string | null; unread_count?: number };
+        Relationships: [];
+      };
+      cs_messages: {
+        Row: { id: string; organization_id: string; group_id: string; evolution_message_id: string | null; direction: 'inbound' | 'outbound'; sender_name: string | null; sender_jid: string | null; body: string | null; media_type: 'image' | 'video' | 'audio' | 'document' | 'sticker' | null; media_url: string | null; status: 'queued' | 'sent' | 'delivered' | 'read' | 'failed' | 'received'; sent_by: string | null; scheduled_message_id: string | null; from_me: boolean; occurred_at: string; created_at: string };
+        Insert: { id?: string; organization_id?: string; group_id: string; evolution_message_id?: string | null; direction: 'inbound' | 'outbound'; sender_name?: string | null; sender_jid?: string | null; body?: string | null; media_type?: 'image' | 'video' | 'audio' | 'document' | 'sticker' | null; media_url?: string | null; status?: 'queued' | 'sent' | 'delivered' | 'read' | 'failed' | 'received'; sent_by?: string | null; scheduled_message_id?: string | null; from_me?: boolean; occurred_at?: string; created_at?: string };
+        Update: { body?: string | null; status?: 'queued' | 'sent' | 'delivered' | 'read' | 'failed' | 'received'; media_url?: string | null };
+        Relationships: [];
+      };
+      cs_scheduled_messages: {
+        Row: { id: string; organization_id: string; created_by: string; group_id: string; title: string; body: string; media_url: string | null; recurrence: 'once' | 'daily' | 'weekly' | 'monthly'; send_time: string; weekday: number | null; day_of_month: number | null; starts_on: string; ends_on: string | null; active: boolean; last_sent_at: string | null; created_at: string; updated_at: string };
+        Insert: { id?: string; organization_id?: string; created_by?: string; group_id: string; title: string; body: string; media_url?: string | null; recurrence: 'once' | 'daily' | 'weekly' | 'monthly'; send_time?: string; weekday?: number | null; day_of_month?: number | null; starts_on?: string; ends_on?: string | null; active?: boolean; last_sent_at?: string | null; created_at?: string; updated_at?: string };
+        Update: { group_id?: string; title?: string; body?: string; media_url?: string | null; recurrence?: 'once' | 'daily' | 'weekly' | 'monthly'; send_time?: string; weekday?: number | null; day_of_month?: number | null; starts_on?: string; ends_on?: string | null; active?: boolean; last_sent_at?: string | null };
+        Relationships: [];
+      };
     };
     Views: { [_ in never]: never };
     Functions: {
@@ -1608,6 +1627,10 @@ export type Database = {
       set_user_agency_tool_permissions: {
         Args: { p_user_id: string; p_tool_keys: string[] };
         Returns: undefined;
+      };
+      can_use_consumer_success: {
+        Args: Record<string, never>;
+        Returns: boolean;
       };
     };
     Enums: { [_ in never]: never };
@@ -1653,3 +1676,6 @@ export type InfobipDepositRow = Tables['infobip_deposits']['Row'];
 export type InfobipSenderRow = Tables['infobip_senders']['Row'];
 export type InfobipTemplateModelRow = Tables['infobip_template_models']['Row'];
 export type InfobipTemplateSubmissionRow = Tables['infobip_template_submissions']['Row'];
+export type CsGroupRow = Tables['cs_groups']['Row'];
+export type CsMessageRow = Tables['cs_messages']['Row'];
+export type CsScheduledMessageRow = Tables['cs_scheduled_messages']['Row'];

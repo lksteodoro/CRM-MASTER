@@ -10,7 +10,8 @@ export type AgencyToolKey =
   | 'disparo.sanitizer'
   | 'disparo.report'
   | 'meta_ads'
-  | 'zpl_pdf';
+  | 'zpl_pdf'
+  | 'consumer_success';
 
 export type AgencyToolDefinition = { key: AgencyToolKey; label: string; path: string };
 export type AgencyToolGroup = { label: string; tools: AgencyToolDefinition[] };
@@ -34,6 +35,11 @@ export const agencyToolGroups: AgencyToolGroup[] = [
     tools: [
       { key: 'meta_ads', label: 'Meta Ads', path: '/agency/ferramentas/meta-ads' },
       { key: 'zpl_pdf', label: 'ZPL para PDF', path: '/agency/ferramentas/zpl-pdf' },
+      {
+        key: 'consumer_success',
+        label: 'Consumer Success',
+        path: '/agency/ferramentas/consumer-success',
+      },
     ],
   },
 ];
