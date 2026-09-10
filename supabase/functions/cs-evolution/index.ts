@@ -6,7 +6,8 @@
 //
 // POST /functions/v1/cs-evolution   Authorization: Bearer <jwt do usuário>
 //   { action: 'get_config' }
-//   { action: 'save_config', base_url, api_key, instance_name }   (admin)
+//   { action: 'save_config', base_url, api_key, instance_name,
+//     send_gap_seconds?, send_gap_jitter_seconds? }               (admin)
 //   { action: 'set_webhook' }                                      (admin)
 //   { action: 'test' }
 //   { action: 'sync_groups' }
@@ -41,6 +42,15 @@ interface Integration {
   webhook_secret: string;
   connected: boolean;
   last_synced_at: string | null;
+  send_gap_seconds: number;
+  send_gap_jitter_seconds: number;
+}
+
+/** Mantém o intervalo dentro de um limite são (0..1h). */
+function clampGap(value: unknown, fallback: number): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(3600, Math.max(0, Math.round(n)));
 }
 
 /** Remove barra final pra não gerar URL com `//`. */
@@ -156,7 +166,7 @@ Deno.serve(async (req) => {
   async function loadIntegration(): Promise<Integration | null> {
     const { data, error } = await admin
       .from('cs_integration')
-      .select('id, organization_id, base_url, api_key, instance_name, webhook_secret, connected, last_synced_at')
+      .select('id, organization_id, base_url, api_key, instance_name, webhook_secret, connected, last_synced_at, send_gap_seconds, send_gap_jitter_seconds')
       .eq('organization_id', organizationId)
       .maybeSingle();
     if (error) throw new Error(error.message);
@@ -171,6 +181,8 @@ Deno.serve(async (req) => {
       instance_name: integration.instance_name,
       connected: integration.connected,
       last_synced_at: integration.last_synced_at,
+      send_gap_seconds: integration.send_gap_seconds ?? 45,
+      send_gap_jitter_seconds: integration.send_gap_jitter_seconds ?? 30,
       webhook_url: `${supabaseUrl}/functions/v1/cs-webhook?secret=${integration.webhook_secret}`,
     };
   }
@@ -186,10 +198,32 @@ Deno.serve(async (req) => {
     if (action === 'save_config') {
       if (!isAdmin) return json({ error: 'admin_required' }, 403);
 
-      const baseUrl = typeof body.base_url === 'string' ? normalizeBaseUrl(body.base_url) : '';
-      const apiKey = typeof body.api_key === 'string' ? body.api_key.trim() : '';
-      const instanceName = typeof body.instance_name === 'string' ? body.instance_name.trim() : '';
+      const existing = await loadIntegration();
+
+      // Com a integração já existente, dá pra salvar só o ritmo de disparo sem
+      // reenviar a API key (o navegador nunca recebe ela de volta).
+      const baseUrl =
+        typeof body.base_url === 'string' && body.base_url.trim()
+          ? normalizeBaseUrl(body.base_url)
+          : existing?.base_url ?? '';
+      const apiKey =
+        typeof body.api_key === 'string' && body.api_key.trim()
+          ? body.api_key.trim()
+          : existing?.api_key ?? '';
+      const instanceName =
+        typeof body.instance_name === 'string' && body.instance_name.trim()
+          ? body.instance_name.trim()
+          : existing?.instance_name ?? '';
       if (!baseUrl || !apiKey || !instanceName) return json({ error: 'missing_fields' }, 400);
+
+      const sendGapSeconds =
+        body.send_gap_seconds === undefined
+          ? existing?.send_gap_seconds ?? 45
+          : clampGap(body.send_gap_seconds, 45);
+      const sendGapJitterSeconds =
+        body.send_gap_jitter_seconds === undefined
+          ? existing?.send_gap_jitter_seconds ?? 30
+          : clampGap(body.send_gap_jitter_seconds, 30);
 
       const check = await evolutionFetch(
         { base_url: baseUrl, api_key: apiKey },
@@ -199,13 +233,14 @@ Deno.serve(async (req) => {
         check.ok &&
         JSON.stringify(check.data).includes('open'); // Evolution devolve state: 'open' quando conectado
 
-      const existing = await loadIntegration();
       const payload = {
         organization_id: organizationId,
         base_url: baseUrl,
         api_key: apiKey,
         instance_name: instanceName,
         connected,
+        send_gap_seconds: sendGapSeconds,
+        send_gap_jitter_seconds: sendGapJitterSeconds,
       };
 
       const { error: saveError } = existing

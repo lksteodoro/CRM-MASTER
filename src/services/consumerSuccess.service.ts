@@ -18,6 +18,8 @@ export interface CsConfig {
   instance_name?: string;
   connected?: boolean;
   last_synced_at?: string | null;
+  send_gap_seconds?: number;
+  send_gap_jitter_seconds?: number;
   webhook_url?: string;
 }
 
@@ -49,7 +51,13 @@ export function getCsConfig() {
   return invoke<CsConfig>({ action: 'get_config' });
 }
 
-export function saveCsConfig(input: { base_url: string; api_key: string; instance_name: string }) {
+export function saveCsConfig(input: {
+  base_url?: string;
+  api_key?: string;
+  instance_name?: string;
+  send_gap_seconds?: number;
+  send_gap_jitter_seconds?: number;
+}) {
   return invoke<CsConfig & { evolution_ok?: boolean; evolution_response?: unknown }>({
     action: 'save_config',
     ...input,

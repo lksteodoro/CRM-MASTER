@@ -45,6 +45,8 @@ function ConnectionForm({
   const [baseUrl, setBaseUrl] = useState(config.base_url ?? '');
   const [apiKey, setApiKey] = useState('');
   const [instanceName, setInstanceName] = useState(config.instance_name ?? '');
+  const [gapSeconds, setGapSeconds] = useState(config.send_gap_seconds ?? 45);
+  const [jitterSeconds, setJitterSeconds] = useState(config.send_gap_jitter_seconds ?? 30);
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -61,7 +63,7 @@ function ConnectionForm({
   }
 
   async function handleSave() {
-    if (!baseUrl.trim() || !apiKey.trim() || !instanceName.trim()) {
+    if (!config.configured && (!baseUrl.trim() || !apiKey.trim() || !instanceName.trim())) {
       setError('Preencha URL, API key e o nome da instância.');
       return;
     }
@@ -70,9 +72,11 @@ function ConnectionForm({
     setMessage(null);
     try {
       const saved = await saveCsConfig({
-        base_url: baseUrl.trim(),
-        api_key: apiKey.trim(),
-        instance_name: instanceName.trim(),
+        base_url: baseUrl.trim() || undefined,
+        api_key: apiKey.trim() || undefined,
+        instance_name: instanceName.trim() || undefined,
+        send_gap_seconds: gapSeconds,
+        send_gap_jitter_seconds: jitterSeconds,
       });
       setApiKey('');
       setMessage(
@@ -167,6 +171,36 @@ function ConnectionForm({
           />
           <p className="mt-1 text-[11px] text-[var(--color-text-faint)]">
             A chave fica só no servidor — o navegador nunca recebe de volta.
+          </p>
+        </div>
+
+        <div>
+          <label className={labelClass}>Intervalo entre grupos (s)</label>
+          <input
+            type="number"
+            min={0}
+            max={3600}
+            className={inputClass}
+            value={gapSeconds}
+            onChange={(event) => setGapSeconds(Math.max(0, Math.min(3600, Number(event.target.value) || 0)))}
+          />
+        </div>
+        <div>
+          <label className={labelClass}>Variação aleatória (s)</label>
+          <input
+            type="number"
+            min={0}
+            max={3600}
+            className={inputClass}
+            value={jitterSeconds}
+            onChange={(event) => setJitterSeconds(Math.max(0, Math.min(3600, Number(event.target.value) || 0)))}
+          />
+        </div>
+        <div className="sm:col-span-3 -mt-1">
+          <p className="text-[11px] text-[var(--color-text-faint)]">
+            Ao disparar pra vários grupos, cada um sai com {gapSeconds}s (± até {jitterSeconds}s
+            aleatórios) de diferença do anterior — evita a rajada de mensagens que costuma
+            derrubar o número. O primeiro grupo sai na hora.
           </p>
         </div>
       </div>
