@@ -5,13 +5,16 @@ import { supabase } from '../../integrations/supabase/client';
 import {
   fetchCsHistory,
   listCsMessages,
+  listCsParticipants,
   markCsGroupRead,
   sendCsMessage,
+  syncCsParticipants,
   updateCsGroup,
 } from '../../services/consumerSuccess.service';
 import type {
   CsGroupRow,
   CsMessageRow,
+  CsParticipantRow,
 } from '../../integrations/supabase/database.types';
 
 /**
@@ -62,6 +65,51 @@ function GroupAvatar({
   );
 }
 
+// Paleta fixa pro círculo de iniciais (quando não há foto), escolhida pelo
+// hash do remetente pra cada pessoa manter sempre a mesma cor — igual WhatsApp.
+const AVATAR_COLORS = [
+  '#6d4aff',
+  '#0ea5e9',
+  '#10b981',
+  '#f59e0b',
+  '#ef4444',
+  '#ec4899',
+  '#8b5cf6',
+  '#14b8a6',
+];
+
+function colorFor(seed: string): string {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash << 5) - hash + seed.charCodeAt(i);
+    hash |= 0;
+  }
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+}
+
+function MessageAvatar({ name, url }: { name: string | null; url: string | null }) {
+  const [broken, setBroken] = useState(false);
+  if (url && !broken) {
+    return (
+      <img
+        src={url}
+        alt={name ?? 'Participante'}
+        loading="lazy"
+        onError={() => setBroken(true)}
+        className="h-7 w-7 shrink-0 rounded-full object-cover"
+      />
+    );
+  }
+  return (
+    <span
+      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+      style={{ backgroundColor: colorFor(name ?? '?') }}
+    >
+      {initials(name)}
+    </span>
+  );
+}
+
 function timeLabel(iso: string | null): string {
   if (!iso) return '';
   const date = new Date(iso);
@@ -86,6 +134,7 @@ export function CsInbox({
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<CsMessageRow[]>([]);
+  const [participants, setParticipants] = useState<CsParticipantRow[]>([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
@@ -99,6 +148,20 @@ export function CsInbox({
   selectedIdRef.current = selectedId;
 
   const selected = groups.find((group) => group.id === selectedId) ?? null;
+
+  const participantsByJid = useMemo(() => {
+    const map = new Map<string, CsParticipantRow>();
+    for (const person of participants) map.set(person.jid, person);
+    return map;
+  }, [participants]);
+
+  async function refreshParticipants() {
+    try {
+      setParticipants(await listCsParticipants());
+    } catch {
+      // sem foto o inbox cai no círculo de iniciais — não é erro de bloqueio
+    }
+  }
 
   const visibleGroups = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -119,7 +182,14 @@ export function CsInbox({
     }
   }
 
-  // Troca de grupo: carrega o histórico e zera o contador de não-lidas.
+  // Carrega as fotos já conhecidas uma vez ao abrir o inbox.
+  useEffect(() => {
+    void refreshParticipants();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Troca de grupo: carrega o histórico, zera o contador e pede à Evolution as
+  // fotos de quem falou nesse grupo (só as que faltam ou venceram).
   useEffect(() => {
     if (!selectedId) {
       setMessages([]);
@@ -127,6 +197,9 @@ export function CsInbox({
     }
     void loadMessages(selectedId, true);
     void markCsGroupRead(selectedId).then(onGroupsChanged).catch(() => undefined);
+    void syncCsParticipants(selectedId)
+      .then(() => refreshParticipants())
+      .catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
 
@@ -156,6 +229,11 @@ export function CsInbox({
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'cs_groups' },
         () => onGroupsChanged()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'cs_participants' },
+        () => void refreshParticipants()
       )
       .subscribe((status) => setLive(status === 'SUBSCRIBED'));
 
@@ -415,11 +493,38 @@ export function CsInbox({
                   </div>
                 )}
 
-                {messages.map((message) => (
+                {messages.map((message, index) => {
+                  const previous = index > 0 ? messages[index - 1] : null;
+                  const participant = message.sender_jid
+                    ? participantsByJid.get(message.sender_jid) ?? null
+                    : null;
+                  const senderName = message.sender_name ?? participant?.name ?? null;
+                  // Igual WhatsApp: a foto aparece só na primeira mensagem de uma
+                  // sequência do mesmo remetente; nas seguintes reserva o espaço.
+                  const startsRun =
+                    !message.from_me &&
+                    (!previous ||
+                      previous.from_me ||
+                      previous.sender_jid !== message.sender_jid);
+
+                  return (
                   <div
                     key={message.id}
-                    className={clsx('flex', message.from_me ? 'justify-end' : 'justify-start')}
+                    className={clsx(
+                      'flex items-end gap-2',
+                      message.from_me ? 'justify-end' : 'justify-start'
+                    )}
                   >
+                    {!message.from_me && (
+                      <div className="w-7 shrink-0">
+                        {startsRun && (
+                          <MessageAvatar
+                            name={senderName ?? message.sender_jid}
+                            url={participant?.avatar_url ?? null}
+                          />
+                        )}
+                      </div>
+                    )}
                     <div
                       className={clsx(
                         'max-w-[75%] rounded-2xl px-3 py-2',
@@ -428,9 +533,9 @@ export function CsInbox({
                           : 'bg-[var(--color-panel-2)] text-[var(--color-text)]'
                       )}
                     >
-                      {!message.from_me && message.sender_name && (
+                      {!message.from_me && senderName && startsRun && (
                         <p className="mb-0.5 text-[10px] font-semibold text-[var(--color-text-muted)]">
-                          {message.sender_name}
+                          {senderName}
                         </p>
                       )}
                       {message.media_type && !message.body && (
@@ -451,7 +556,8 @@ export function CsInbox({
                       </p>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
                 <div ref={bottomRef} />
               </div>
 

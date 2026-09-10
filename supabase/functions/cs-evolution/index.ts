@@ -12,6 +12,7 @@
 //   { action: 'sync_groups' }
 //   { action: 'send_message', group_id, body }
 //   { action: 'fetch_history', group_id, limit? }
+//   { action: 'sync_participants', group_id }
 //
 // Autorização: o JWT identifica o usuário; `can_use_consumer_success()` diz se
 // ele tem a ferramenta liberada (admin sempre tem). As ações que mexem na
@@ -453,6 +454,102 @@ Deno.serve(async (req) => {
       }
 
       return json({ ok: true, imported: rows.length });
+    }
+
+    // -----------------------------------------------------------------------
+    // Busca (sob demanda) a foto de perfil de quem falou no grupo. É chamada
+    // quando o inbox abre uma conversa; só olha os JIDs sem foto ou com a
+    // última checagem há mais de uma semana (a URL da Evolution expira).
+    if (action === 'sync_participants') {
+      const groupId = typeof body.group_id === 'string' ? body.group_id : null;
+      if (!groupId) return json({ error: 'missing_fields' }, 400);
+
+      const { data: group, error: groupError } = await admin
+        .from('cs_groups')
+        .select('id')
+        .eq('id', groupId)
+        .eq('organization_id', organizationId)
+        .maybeSingle();
+      if (groupError) return json({ error: groupError.message }, 400);
+      if (!group) return json({ error: 'group_not_found' }, 404);
+
+      const { data: senderRows, error: sendersError } = await admin
+        .from('cs_messages')
+        .select('sender_jid')
+        .eq('organization_id', organizationId)
+        .eq('group_id', groupId)
+        .eq('from_me', false)
+        .not('sender_jid', 'is', null)
+        .limit(2000);
+      if (sendersError) return json({ error: sendersError.message }, 400);
+
+      const jids = [
+        ...new Set(
+          (senderRows ?? [])
+            .map((row) => (row as { sender_jid: string | null }).sender_jid)
+            .filter((jid): jid is string => typeof jid === 'string' && jid.length > 0)
+        ),
+      ];
+      if (jids.length === 0) return json({ ok: true, checked: 0, updated: 0 });
+
+      const { data: known, error: knownError } = await admin
+        .from('cs_participants')
+        .select('jid, avatar_url, avatar_checked_at')
+        .eq('organization_id', organizationId)
+        .in('jid', jids);
+      if (knownError) return json({ error: knownError.message }, 400);
+
+      const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const knownByJid = new Map(
+        (known ?? []).map((row) => [
+          (row as { jid: string }).jid,
+          row as { avatar_url: string | null; avatar_checked_at: string | null },
+        ])
+      );
+
+      const stale = jids.filter((jid) => {
+        const row = knownByJid.get(jid);
+        if (!row) return true;
+        if (!row.avatar_checked_at) return true;
+        return new Date(row.avatar_checked_at).getTime() < weekAgo;
+      });
+
+      // Limite por chamada pra não estourar o tempo da função em grupos grandes.
+      const batch = stale.slice(0, 40);
+      let updated = 0;
+      const nowIso = new Date().toISOString();
+
+      for (const jid of batch) {
+        let avatarUrl: string | null = null;
+        try {
+          const pic = await evolutionFetch(
+            integration,
+            `/chat/fetchProfilePictureUrl/${encodeURIComponent(integration.instance_name)}`,
+            { method: 'POST', body: JSON.stringify({ number: jid }) }
+          );
+          if (pic.ok && pic.data && typeof pic.data === 'object') {
+            const candidate = (pic.data as Record<string, unknown>).profilePictureUrl;
+            if (typeof candidate === 'string' && candidate.startsWith('http')) {
+              avatarUrl = candidate;
+            }
+          }
+        } catch {
+          // rede/timeout: deixa pra próxima abertura da conversa
+        }
+
+        const { error: upsertError } = await admin.from('cs_participants').upsert(
+          {
+            organization_id: organizationId,
+            jid,
+            avatar_url: avatarUrl,
+            avatar_checked_at: nowIso,
+          },
+          { onConflict: 'organization_id,jid' }
+        );
+        if (!upsertError && avatarUrl) updated += 1;
+      }
+
+      return json({ ok: true, checked: batch.length, updated });
     }
 
     return json({ error: 'unknown_action' }, 400);

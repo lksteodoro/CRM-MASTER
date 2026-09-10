@@ -1615,6 +1615,12 @@ export type Database = {
         Update: never;
         Relationships: [];
       };
+      cs_participants: {
+        Row: { id: string; organization_id: string; jid: string; name: string | null; avatar_url: string | null; avatar_checked_at: string | null; created_at: string; updated_at: string };
+        Insert: { id?: string; organization_id?: string; jid: string; name?: string | null; avatar_url?: string | null; avatar_checked_at?: string | null; created_at?: string; updated_at?: string };
+        Update: { name?: string | null; avatar_url?: string | null; avatar_checked_at?: string | null };
+        Relationships: [];
+      };
     };
     Views: { [_ in never]: never };
     Functions: {
@@ -1691,3 +1697,4 @@ export type CsMessageRow = Tables['cs_messages']['Row'];
 export type CsScheduledMessageRow = Tables['cs_scheduled_messages']['Row'];
 
 export type CsDeliveryRow = Tables['cs_deliveries']['Row'];
+export type CsParticipantRow = Tables['cs_participants']['Row'];

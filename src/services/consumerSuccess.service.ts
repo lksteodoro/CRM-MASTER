@@ -3,6 +3,7 @@ import type {
   CsGroupRow,
   CsDeliveryRow,
   CsMessageRow,
+  CsParticipantRow,
   CsScheduledMessageRow,
 } from '../integrations/supabase/database.types';
 
@@ -114,6 +115,24 @@ export async function updateCsGroup(
 export async function markCsGroupRead(id: string) {
   const { error } = await supabase.from('cs_groups').update({ unread_count: 0 }).eq('id', id);
   if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// Participantes (nome + foto de quem fala nos grupos)
+// ---------------------------------------------------------------------------
+
+export async function listCsParticipants(): Promise<CsParticipantRow[]> {
+  const { data, error } = await supabase.from('cs_participants').select('*');
+  if (error) throw error;
+  return data ?? [];
+}
+
+/** Pede à Evolution a foto de quem falou no grupo (só os que faltam ou venceram). */
+export function syncCsParticipants(groupId: string) {
+  return invoke<{ ok: boolean; checked: number; updated: number }>({
+    action: 'sync_participants',
+    group_id: groupId,
+  });
 }
 
 // ---------------------------------------------------------------------------

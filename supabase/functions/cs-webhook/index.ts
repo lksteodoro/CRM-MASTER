@@ -139,6 +139,8 @@ Deno.serve(async (req) => {
         if (!remoteJid.endsWith('@g.us')) continue;
 
         const fromMe = key?.fromMe === true;
+        const senderJid = typeof key?.participant === 'string' ? key.participant : null;
+        const pushName = typeof record.pushName === 'string' ? record.pushName : null;
         const message = record.message as Record<string, unknown> | undefined;
         const text = extractBody(message);
         const mediaType = extractMediaType(message);
@@ -161,8 +163,8 @@ Deno.serve(async (req) => {
               group_id: groupId,
               evolution_message_id: messageId,
               direction: fromMe ? 'outbound' : 'inbound',
-              sender_name: typeof record.pushName === 'string' ? record.pushName : null,
-              sender_jid: typeof key?.participant === 'string' ? key.participant : null,
+              sender_name: pushName,
+              sender_jid: senderJid,
               body: text,
               media_type: mediaType,
               status: fromMe ? 'sent' : 'received',
@@ -188,6 +190,22 @@ Deno.serve(async (req) => {
             () => undefined,
             () => undefined
           );
+
+          // Registra quem falou pra depois casar com a foto (buscada sob
+          // demanda pela cs-evolution). Aqui não chamamos a Evolution — o
+          // webhook tem que responder rápido.
+          if (senderJid) {
+            await admin
+              .rpc('cs_touch_participant', {
+                p_organization_id: organizationId,
+                p_jid: senderJid,
+                p_name: pushName,
+              })
+              .then(
+                () => undefined,
+                () => undefined
+              );
+          }
         }
       }
 
