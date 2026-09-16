@@ -6,10 +6,12 @@ import {
   LoaderCircle,
   Printer,
   Settings2,
+  TriangleAlert,
   UploadCloud,
 } from 'lucide-react';
 import { Card } from '../../components/ui/Card';
 import {
+  analyzeZpl,
   convertZplToPdf,
   countZplLabels,
   extractPrintableZplBlocks,
@@ -46,6 +48,12 @@ export function ZplPdfToolPage() {
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const labelCount = useMemo(() => countZplLabels(zpl), [zpl]);
+  const blockSummary = useMemo(() => {
+    if (!zpl.trim()) return null;
+    const blocks = analyzeZpl(zpl);
+    if (blocks.length === 0) return null;
+    return { blocks, duplicated: blocks.some((block) => block.copies > 1) };
+  }, [zpl]);
 
   useEffect(() => () => {
     if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
@@ -246,6 +254,49 @@ export function ZplPdfToolPage() {
                   {labelCount} de {MAX_ZPL_LABELS} etiquetas
                 </span>
               </div>
+
+              {/* Sem este resumo, um bloco descartado em silêncio passa
+                  despercebido — e se a etiqueta restante tiver ^PQ2, o PDF sai
+                  com duas páginas iguais parecendo estar correto. */}
+              {blockSummary && (
+                <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-3">
+                  <p className="text-xs font-semibold text-[var(--color-text)]">
+                    {blockSummary.blocks.length} bloco(s) no arquivo · {labelCount} página(s) no PDF
+                  </p>
+                  <ul className="mt-2 flex flex-col gap-1.5">
+                    {blockSummary.blocks.map((block) => (
+                      <li key={block.position} className="flex items-start gap-2 text-xs leading-5">
+                        <span
+                          className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                            block.kind === 'label'
+                              ? 'bg-[var(--color-brand-soft)] text-[var(--color-brand)]'
+                              : block.kind === 'format'
+                                ? 'bg-[var(--color-panel-2)] text-[var(--color-text-muted)]'
+                                : 'bg-amber-400/10 text-amber-400'
+                          }`}
+                        >
+                          {block.kind === 'label'
+                            ? block.copies > 1 ? `${block.copies} cópias` : 'etiqueta'
+                            : block.kind === 'format' ? 'modelo' : 'ignorado'}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="text-[var(--color-text-muted)]">{block.position}. </span>
+                          <span className="break-all font-mono text-[11px] text-[var(--color-text)]">{block.preview}</span>
+                          {block.reason && (
+                            <span className="mt-0.5 block text-[11px] text-[var(--color-text-faint)]">{block.reason}</span>
+                          )}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                  {blockSummary.duplicated && (
+                    <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-5 text-amber-400">
+                      <TriangleAlert size={13} className="mt-0.5 shrink-0" />
+                      Atenção: o PDF terá páginas repetidas porque uma etiqueta pede várias cópias (^PQ). Se você esperava etiquetas diferentes, confira os blocos marcados como ignorados acima.
+                    </p>
+                  )}
+                </div>
+              )}
 
               {error && <div role="alert" className="rounded-lg border border-red-400/25 bg-red-500/10 p-3 text-sm text-red-400">{error}</div>}
 
