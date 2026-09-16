@@ -21,6 +21,7 @@ import {
   specialAdCategoryLabel,
   validateDestinationUrl,
 } from '../lib/metaCompliance';
+import { META_UTM_TEMPLATE } from '../lib/utmBuilder';
 // O módulo foi importado do CRM VENZA. Clientes e credenciais serão ligados
 // aos dados reais deste CRM na próxima etapa de integração.
 const CLIENTS = [];
@@ -104,7 +105,9 @@ const CTA_OPTIONS = [
   { value: 'WATCH_MORE', label: 'Ver Mais' },
 ];
 
-const DEFAULT_UTM = '?utm_campaign={{campaign.name}}&utm_source={{placement}}&utm_medium={{adset.name}}&utm_content={{ad.name}}';
+// O padrão vive em lib/utmBuilder para que o criador de anúncios e o criador
+// de URL de teste nunca fiquem apontando para formatos diferentes.
+const DEFAULT_UTM = META_UTM_TEMPLATE;
 
 const OBJECTIVE_ADSET_CONFIG = {
   OUTCOME_TRAFFIC:    { optimization_goal: 'LINK_CLICKS',         destination_type: 'WEBSITE', needs_pixel: false, valid_goals: ['LINK_CLICKS', 'LANDING_PAGE_VIEWS'] },
