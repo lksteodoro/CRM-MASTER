@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Copy, Download, ExternalLink, Link2, Loader2, RefreshCw, Search } from 'lucide-react';
+import { ChevronDown, ChevronRight, Copy, Download, ExternalLink, Link2, Loader2, RefreshCw, Search } from 'lucide-react';
 import clsx from 'clsx';
 import { metaGetAll, MetaNotConnectedError } from '../../lib/metaGraph';
 
@@ -21,11 +21,16 @@ type GraphAd = {
 
 type GraphCampaign = { id: string; name?: string; effective_status?: string };
 
+type UrlGroup = {
+  url: string;
+  ads: { id: string; name: string; adset: string; status: string }[];
+};
+
 type CampaignRow = {
   id: string;
   name: string;
   status: string;
-  urls: string[];
+  urlGroups: UrlGroup[];
   adCount: number;
 };
 
@@ -81,6 +86,16 @@ export function MetaCampaignUrls() {
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<Record<string, CampaignRow[]>>({});
   const [copied, setCopied] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  function toggleExpanded(key: string) {
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -131,7 +146,7 @@ export function MetaCampaignUrls() {
           `${accountId}/ads`,
           {
             fields:
-              'id,name,effective_status,campaign{id,name,effective_status},creative{object_story_spec,asset_feed_spec,link_url,object_url}',
+              'id,name,effective_status,adset{name},campaign{id,name,effective_status},creative{object_story_spec,asset_feed_spec,link_url,object_url}',
             limit: 100,
             ...(filtering ? { filtering } : {}),
           },
@@ -145,7 +160,7 @@ export function MetaCampaignUrls() {
           id: campaign.id,
           name: campaign.name || campaign.id,
           status: campaign.effective_status || '',
-          urls: [],
+          urlGroups: [],
           adCount: 0,
         });
       }
@@ -158,13 +173,24 @@ export function MetaCampaignUrls() {
             id: campaignId,
             name: ad.campaign?.name || campaignId,
             status: ad.campaign?.effective_status || '',
-            urls: [],
+            urlGroups: [],
             adCount: 0,
           };
         row.adCount += 1;
-        for (const url of creativeUrls(ad.creative)) if (!row.urls.includes(url)) row.urls.push(url);
+        const entry = {
+          id: ad.id,
+          name: ad.name || ad.id,
+          adset: ad.adset?.name || '',
+          status: ad.effective_status || '',
+        };
+        for (const url of creativeUrls(ad.creative)) {
+          const group = row.urlGroups.find((item) => item.url === url);
+          if (group) group.ads.push(entry);
+          else row.urlGroups.push({ url, ads: [entry] });
+        }
         byCampaign.set(campaignId, row);
       }
+      for (const row of byCampaign.values()) row.urlGroups.sort((a, b) => b.ads.length - a.ads.length);
       return [...byCampaign.values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
     },
     [onlyActive]
@@ -208,20 +234,21 @@ export function MetaCampaignUrls() {
   }
 
   function exportCsv() {
-    const lines = [['Conta', 'ID da conta', 'Campanha', 'ID da campanha', 'Status', 'Anúncios', 'URL']];
+    const lines = [['Conta', 'ID da conta', 'Campanha', 'ID da campanha', 'Status', 'URL', 'Anúncios com essa URL', 'Nomes dos anúncios']];
     for (const accountId of selected) {
       const account = accountById.get(accountId);
       for (const row of results[accountId] ?? []) {
-        const urls = row.urls.length > 0 ? row.urls : [''];
-        for (const url of urls) {
+        const groups: UrlGroup[] = row.urlGroups.length > 0 ? row.urlGroups : [{ url: '', ads: [] }];
+        for (const group of groups) {
           lines.push([
             account?.name || accountId,
             accountId,
             row.name,
             row.id,
             STATUS_LABEL[row.status] ?? row.status,
-            String(row.adCount),
-            url,
+            group.url,
+            String(group.ads.length),
+            group.ads.map((ad) => ad.name).join(' | '),
           ]);
         }
       }
@@ -358,7 +385,7 @@ export function MetaCampaignUrls() {
                     (row) =>
                       !term ||
                       row.name.toLowerCase().includes(term) ||
-                      row.urls.some((url) => url.toLowerCase().includes(term))
+                      row.urlGroups.some((group) => group.url.toLowerCase().includes(term))
                   );
                   return (
                     <div key={accountId} className="overflow-hidden rounded-2xl border border-[var(--color-border)]">
@@ -405,6 +432,11 @@ export function MetaCampaignUrls() {
                                 <tr key={row.id} className="border-t border-[var(--color-border-soft)] align-top">
                                   <td className="px-4 py-3">
                                     <p className="font-medium text-[var(--color-text)]">{row.name}</p>
+                                    {row.urlGroups.length > 1 && (
+                                      <span className="mt-1 inline-block rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-300">
+                                        {row.urlGroups.length} URLs diferentes
+                                      </span>
+                                    )}
                                     <p className="font-mono text-[10px] text-[var(--color-text-faint)]">{row.id}</p>
                                   </td>
                                   <td className="px-2 py-3">
@@ -421,31 +453,57 @@ export function MetaCampaignUrls() {
                                   </td>
                                   <td className="px-2 py-3 text-right text-[var(--color-text-muted)]">{row.adCount}</td>
                                   <td className="px-4 py-3">
-                                    {row.urls.length === 0 ? (
+                                    {row.urlGroups.length === 0 ? (
                                       <span className="text-[var(--color-text-faint)]">
                                         {row.adCount === 0 ? 'Sem anúncios' : 'URL não encontrada nos criativos'}
                                       </span>
                                     ) : (
-                                      <ul className="space-y-1.5">
-                                        {row.urls.map((url) => (
-                                          <li key={url} className="flex items-center gap-2">
-                                            <a
-                                              href={url}
-                                              target="_blank"
-                                              rel="noreferrer noopener"
-                                              className="min-w-0 break-all text-cyan-300 hover:underline"
-                                            >
-                                              {url}
-                                            </a>
-                                            <button
-                                              onClick={() => void copy(url)}
-                                              title="Copiar URL"
-                                              className="shrink-0 text-[var(--color-text-faint)] hover:text-[var(--color-text)]"
-                                            >
-                                              {copied === url ? <span className="text-emerald-400">Copiado</span> : <Copy size={12} />}
-                                            </button>
-                                          </li>
-                                        ))}
+                                      <ul className="space-y-2">
+                                        {row.urlGroups.map((group) => {
+                                          const key = `${row.id}|${group.url}`;
+                                          const open = expanded.has(key);
+                                          return (
+                                            <li key={key} className="rounded-lg border border-[var(--color-border-soft)] p-2">
+                                              <div className="flex items-start gap-2">
+                                                <a
+                                                  href={group.url}
+                                                  target="_blank"
+                                                  rel="noreferrer noopener"
+                                                  className="min-w-0 flex-1 break-all text-cyan-300 hover:underline"
+                                                >
+                                                  {group.url}
+                                                </a>
+                                                <button
+                                                  onClick={() => void copy(group.url)}
+                                                  title="Copiar URL"
+                                                  className="shrink-0 text-[var(--color-text-faint)] hover:text-[var(--color-text)]"
+                                                >
+                                                  {copied === group.url ? <span className="text-emerald-400">Copiado</span> : <Copy size={12} />}
+                                                </button>
+                                              </div>
+                                              <button
+                                                onClick={() => toggleExpanded(key)}
+                                                className="mt-1.5 inline-flex items-center gap-1 text-[10px] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                                              >
+                                                {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                                                {group.ads.length} anúncio(s) usam esta URL
+                                              </button>
+                                              {open && (
+                                                <ul className="mt-1.5 space-y-0.5 border-l border-[var(--color-border)] pl-3 text-[11px] text-[var(--color-text-muted)]">
+                                                  {group.ads.map((ad) => (
+                                                    <li key={ad.id} className="truncate" title={ad.name}>
+                                                      {ad.name}
+                                                      {ad.adset && <span className="text-[var(--color-text-faint)]"> · {ad.adset}</span>}
+                                                      {ad.status && ad.status !== 'ACTIVE' && (
+                                                        <span className="text-[var(--color-text-faint)]"> · {STATUS_LABEL[ad.status] ?? ad.status}</span>
+                                                      )}
+                                                    </li>
+                                                  ))}
+                                                </ul>
+                                              )}
+                                            </li>
+                                          );
+                                        })}
                                       </ul>
                                     )}
                                   </td>
