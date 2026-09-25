@@ -12,6 +12,7 @@ import {
   WalletCards,
 } from 'lucide-react';
 import MetaAdCreator from '../../components/MetaAdCreator';
+import { MetaCampaignUrls } from '../../components/ads/MetaCampaignUrls';
 import { listProjects } from '../../services/projects.service';
 import type { ProjectRow } from '../../integrations/supabase/database.types';
 import { ErrorView, LoadingView } from '../../components/ui/StateView';
@@ -222,6 +223,8 @@ export function MetaAdsToolPage() {
         <p className="mt-4 text-[11px] text-[var(--color-text-faint)]">Os perfis guardam apenas atalhos de configuração (conta, página, pixel) e ficam neste navegador. A credencial da Meta nunca passa por aqui: ela fica no servidor, na conexão feita em Configurações › APIs.</p>
       </div>
       </section>
+
+      <MetaCampaignUrls />
 
       {notice && <div className="mt-5 flex items-center gap-2 rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200"><CheckCircle2 size={17} />{notice}</div>}
 
