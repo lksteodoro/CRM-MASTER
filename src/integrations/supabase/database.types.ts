@@ -1640,6 +1640,14 @@ export type Database = {
         Args: { p_slug: string };
         Returns: Array<{ target_url: string; delay_seconds: number; link_name: string }>;
       };
+      save_redirect_destinations: {
+        Args: { p_link_id: string; p_destinations: Json };
+        Returns: Array<Database['public']['Tables']['redirect_destinations']['Row']>;
+      };
+      redirect_click_stats: {
+        Args: { p_from: string; p_to: string };
+        Returns: Array<{ redirect_link_id: string; day: string; target_url: string; clicks: number }>;
+      };
       set_user_agency_tool_permissions: {
         Args: { p_user_id: string; p_tool_keys: string[] };
         Returns: undefined;

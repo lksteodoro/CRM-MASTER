@@ -128,24 +128,16 @@ export async function updateRedirectLink(
 ): Promise<RedirectLinkWithDestinations> {
   const clean = normalizedInput(input);
   const { destinations, ...linkInput } = clean;
-  const { data: previousDestinations, error: previousError } = await supabase
-    .from('redirect_destinations').select('*').eq('redirect_link_id', linkId).order('position');
-  if (previousError) throw previousError;
   const { data: link, error: linkError } = await supabase
     .from('redirect_links').update(linkInput).eq('id', linkId).select().single();
   if (linkError) throw linkError;
-  const { error: deleteError } = await supabase.from('redirect_destinations').delete().eq('redirect_link_id', linkId);
-  if (deleteError) throw deleteError;
-  const { data: destinationRows, error: destinationsError } = await supabase
-    .from('redirect_destinations').insert(toDestinationRows(linkId, destinations)).select();
-  if (destinationsError) {
-    if (previousDestinations?.length) {
-      await supabase.from('redirect_destinations').insert(
-        previousDestinations.map(({ id: _id, created_at: _createdAt, ...destination }) => destination)
-      );
-    }
-    throw destinationsError;
-  }
+  // Destinos com a mesma URL são mantidos com o contador; só o que mudou é
+  // criado ou removido. Apagar e recriar zerava os acessos a cada edição.
+  const { data: destinationRows, error: destinationsError } = await supabase.rpc('save_redirect_destinations', {
+    p_link_id: linkId,
+    p_destinations: destinations.map((destination) => ({ label: destination.label, target_url: destination.target_url })),
+  });
+  if (destinationsError) throw destinationsError;
   return { ...link, destinations: destinationRows ?? [] };
 }
 
@@ -158,6 +150,20 @@ export async function setRedirectLinkActive(linkId: string, active: boolean): Pr
 export async function deleteRedirectLink(linkId: string) {
   const { error } = await supabase.from('redirect_links').delete().eq('id', linkId);
   if (error) throw error;
+}
+
+export interface RedirectClickStat {
+  redirect_link_id: string;
+  day: string;
+  target_url: string;
+  clicks: number;
+}
+
+/** Cliques por dia (fuso de São Paulo), por link e URL, no intervalo [from, to]. */
+export async function getRedirectClickStats(from: string, to: string): Promise<RedirectClickStat[]> {
+  const { data, error } = await supabase.rpc('redirect_click_stats', { p_from: from, p_to: to });
+  if (error) throw error;
+  return (data ?? []).map((row) => ({ ...row, clicks: Number(row.clicks) }));
 }
 
 export async function resolveRedirectLink(slug: string): Promise<ResolvedRedirect | null> {

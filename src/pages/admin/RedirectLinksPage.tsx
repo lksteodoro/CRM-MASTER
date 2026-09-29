@@ -13,6 +13,7 @@ import {
 } from '../../services/redirectLinks.service';
 import type { ClientRow } from '../../integrations/supabase/database.types';
 import { EmptyView, ErrorView, LoadingView } from '../../components/ui/StateView';
+import { RedirectClickAnalytics } from '../../components/disparo/RedirectClickAnalytics';
 
 const inputClass = 'w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-faint)] focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/45';
 const labelClass = 'mb-1 block text-xs font-medium text-[var(--color-text-muted)]';
@@ -90,6 +91,8 @@ export function RedirectLinksPage() {
       </header>
 
       {error && <p role="alert" className="rounded-lg border border-[var(--color-bad)] bg-[var(--color-bad-soft)] px-3 py-2 text-xs text-[var(--color-bad)]">{error}</p>}
+
+      {links.length > 0 && <RedirectClickAnalytics links={links} clients={clients} />}
 
       {links.length === 0 ? <EmptyView title="Nenhum redirecionador criado" description="Crie um link para cada cliente e organize os destinos da campanha." action={<button type="button" onClick={() => setEditing(null)} className="rounded-lg bg-[var(--color-brand)] px-4 py-2 text-sm font-medium text-white">Criar primeiro link</button>} /> : (
         <div className="flex flex-col gap-5">
