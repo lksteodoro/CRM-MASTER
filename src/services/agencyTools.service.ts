@@ -11,7 +11,8 @@ export type AgencyToolKey =
   | 'disparo.report'
   | 'meta_ads'
   | 'zpl_pdf'
-  | 'consumer_success';
+  | 'consumer_success'
+  | 'utm_tester';
 
 export type AgencyToolDefinition = { key: AgencyToolKey; label: string; path: string };
 export type AgencyToolGroup = { label: string; tools: AgencyToolDefinition[] };
@@ -40,6 +41,7 @@ export const agencyToolGroups: AgencyToolGroup[] = [
         label: 'Consumer Success',
         path: '/agency/ferramentas/consumer-success',
       },
+      { key: 'utm_tester', label: 'Criador de URL de teste', path: '/agency/ferramentas/url-de-teste' },
     ],
   },
 ];

@@ -27,6 +27,28 @@ interface ParsedZpl {
   prefix: string;
 }
 
+/**
+ * O que o conversor fez com cada bloco `^XA…^XZ` do arquivo.
+ *
+ * Nem todo bloco vira etiqueta: alguns são só configuração da impressora e
+ * outros são modelos reaproveitados. Antes esse descarte era silencioso, e a
+ * combinação "um bloco ignorado + outro com ^PQ2" produzia duas páginas iguais
+ * sem nenhuma pista de que uma das etiquetas do arquivo tinha sumido.
+ */
+export type ZplBlockKind = 'label' | 'format' | 'ignored';
+
+export interface ZplBlockInfo {
+  /** Posição do bloco no arquivo, contando a partir de 1. */
+  position: number;
+  kind: ZplBlockKind;
+  /** Quantas páginas este bloco gera no PDF. */
+  copies: number;
+  /** Texto do primeiro campo, para a pessoa reconhecer a etiqueta. */
+  preview: string;
+  /** Por que o bloco não virou etiqueta. */
+  reason?: string;
+}
+
 interface PdfContentBounds {
   left: number;
   bottom: number;
@@ -69,6 +91,44 @@ export function extractPrintableZplBlocks(zpl: string) {
     .filter((block) => Number(block.match(/\^PQ\s*(\d+)/i)?.[1] ?? 1) !== 0);
 }
 
+/** Um bloco `^DF` guarda um modelo que as etiquetas seguintes recuperam com `^XF`. */
+function isFormatDownload(block: string) {
+  return /\^DF(?:R:|E:|B:|A:)?/i.test(block);
+}
+
+function blockQuantity(block: string) {
+  const match = block.match(/\^PQ\s*(\d+)/i);
+  return match ? Number(match[1]) : 1;
+}
+
+/** Primeiro texto imprimível do bloco, para identificar a etiqueta na tela. */
+function blockPreview(block: string) {
+  const field = block.match(/\^FD([^^]*?)\^FS/i)?.[1]?.trim();
+  if (field) return field.slice(0, 60);
+  return block.replace(/\s+/g, ' ').slice(0, 60);
+}
+
+/** Descreve o destino de cada bloco do arquivo, sem convertê-lo. */
+export function analyzeZpl(zpl: string): ZplBlockInfo[] {
+  return [...zpl.matchAll(/\^XA[\s\S]*?\^XZ/gi)].map((match, index) => {
+    const block = match[0];
+    const position = index + 1;
+    const preview = blockPreview(block);
+
+    if (isFormatDownload(block)) {
+      return { position, kind: 'format', copies: 0, preview, reason: 'Modelo reaproveitado pelas etiquetas que usam ^XF.' };
+    }
+    if (!isPrintableLabel(block)) {
+      return { position, kind: 'ignored', copies: 0, preview, reason: 'Bloco só de configuração da impressora: não gera etiqueta.' };
+    }
+    const quantity = blockQuantity(block);
+    if (quantity === 0) {
+      return { position, kind: 'ignored', copies: 0, preview, reason: 'O próprio arquivo pede zero cópias (^PQ0).' };
+    }
+    return { position, kind: 'label', copies: quantity, preview };
+  });
+}
+
 function splitZpl(zpl: string): ParsedZpl {
   const labelPattern = /\^XA[\s\S]*?\^XZ/gi;
   const matches = [...zpl.matchAll(labelPattern)];
@@ -77,12 +137,20 @@ function splitZpl(zpl: string): ParsedZpl {
   }
 
   const labels: string[] = [];
+  // Modelos ^DF precisam chegar ao renderizador antes das etiquetas que os
+  // recuperam com ^XF. Descartá-los fazia essas etiquetas saírem sem o layout.
+  const formats: string[] = [];
+
   for (const match of matches) {
     const label = match[0];
+    if (isFormatDownload(label)) {
+      formats.push(label);
+      continue;
+    }
     if (!isPrintableLabel(label)) continue;
-    const quantityMatch = label.match(/\^PQ\s*(\d+)/i);
-    const quantity = quantityMatch ? Number(quantityMatch[1]) : 1;
+    const quantity = blockQuantity(label);
     if (quantity === 0) continue;
+    const quantityMatch = label.match(/\^PQ\s*(\d+)/i);
     const singleLabel = quantityMatch ? label.replace(/\^PQ\s*\d+/i, '^PQ1') : label;
     if (labels.length + quantity > MAX_ZPL_LABELS) {
       throw new Error(`O arquivo gera mais de ${MAX_ZPL_LABELS} etiquetas. Reduza o lote e tente novamente.`);
@@ -94,18 +162,16 @@ function splitZpl(zpl: string): ParsedZpl {
     throw new Error('Os blocos ZPL encontrados não contêm etiquetas imprimíveis.');
   }
 
+  const header = zpl.slice(0, matches[0].index ?? 0);
   return {
     labels,
-    prefix: zpl.slice(0, matches[0].index ?? 0),
+    prefix: formats.length > 0 ? `${header}${formats.join('\n')}\n` : header,
   };
 }
 
 export function countZplLabels(zpl: string): number {
   if (!zpl.trim()) return 0;
-  return extractPrintableZplBlocks(zpl).reduce((total, block) => {
-    const quantity = Number(block.match(/\^PQ\s*(\d+)/i)?.[1] ?? 1);
-    return total + quantity;
-  }, 0);
+  return analyzeZpl(zpl).reduce((total, block) => total + block.copies, 0);
 }
 
 function wait(milliseconds: number) {
