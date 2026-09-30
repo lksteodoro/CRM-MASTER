@@ -16,6 +16,8 @@ type GraphAd = {
     asset_feed_spec?: Record<string, any>;
     link_url?: string;
     object_url?: string;
+    body?: string;
+    title?: string;
   };
 };
 
@@ -26,11 +28,19 @@ type UrlGroup = {
   ads: { id: string; name: string; adset: string; status: string }[];
 };
 
+type CopyGroup = {
+  primary: string;
+  headline: string;
+  description: string;
+  ads: { id: string; name: string; adset: string; status: string }[];
+};
+
 type CampaignRow = {
   id: string;
   name: string;
   status: string;
   urlGroups: UrlGroup[];
+  copyGroups: CopyGroup[];
   adCount: number;
 };
 
@@ -71,6 +81,48 @@ function creativeUrls(creative: GraphAd['creative']): string[] {
     .map((value) => value.trim());
 }
 
+type CopyParts = { primary: string; headline: string; description: string };
+
+/**
+ * Extrai o texto do anúncio (texto principal, título e descrição) de qualquer
+ * formato de criativo: imagem/link, vídeo, carrossel e criativo dinâmico.
+ */
+function creativeCopies(creative: GraphAd['creative']): CopyParts[] {
+  if (!creative) return [];
+  const clean = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+  const spec = creative.object_story_spec ?? {};
+  const link = spec.link_data;
+  const video = spec.video_data;
+  const out: CopyParts[] = [];
+
+  if (link) {
+    const children: any[] = link.child_attachments ?? [];
+    const childTitles = children.map((child) => clean(child?.name)).filter(Boolean);
+    const childDescriptions = children.map((child) => clean(child?.description)).filter(Boolean);
+    out.push({
+      primary: clean(link.message),
+      headline: clean(link.name) || childTitles.join(' | '),
+      description: clean(link.description) || childDescriptions.join(' | '),
+    });
+  }
+  if (video) {
+    out.push({ primary: clean(video.message), headline: clean(video.title), description: clean(video.link_description) });
+  }
+
+  const feed = creative.asset_feed_spec;
+  if (feed) {
+    const texts = (items: any[] | undefined) => (items ?? []).map((item) => clean(item?.text)).filter(Boolean);
+    const bodies = texts(feed.bodies);
+    const headline = texts(feed.titles).join(' | ');
+    const description = texts(feed.descriptions).join(' | ');
+    if (bodies.length === 0 && (headline || description)) out.push({ primary: '', headline, description });
+    for (const primary of bodies) out.push({ primary, headline, description });
+  }
+
+  if (out.length === 0) out.push({ primary: clean(creative.body), headline: clean(creative.title), description: '' });
+  return out.filter((item) => item.primary || item.headline || item.description);
+}
+
 function csvCell(value: string) {
   return `"${value.replace(/"/g, '""')}"`;
 }
@@ -86,6 +138,7 @@ export function MetaCampaignUrls() {
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<Record<string, CampaignRow[]>>({});
   const [copied, setCopied] = useState<string | null>(null);
+  const [view, setView] = useState<'urls' | 'copies'>('urls');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   function toggleExpanded(key: string) {
@@ -146,7 +199,7 @@ export function MetaCampaignUrls() {
           `${accountId}/ads`,
           {
             fields:
-              'id,name,effective_status,adset{name},campaign{id,name,effective_status},creative{object_story_spec,asset_feed_spec,link_url,object_url}',
+              'id,name,effective_status,adset{name},campaign{id,name,effective_status},creative{object_story_spec,asset_feed_spec,link_url,object_url,body,title}',
             limit: 100,
             ...(filtering ? { filtering } : {}),
           },
@@ -161,6 +214,7 @@ export function MetaCampaignUrls() {
           name: campaign.name || campaign.id,
           status: campaign.effective_status || '',
           urlGroups: [],
+          copyGroups: [],
           adCount: 0,
         });
       }
@@ -174,6 +228,7 @@ export function MetaCampaignUrls() {
             name: ad.campaign?.name || campaignId,
             status: ad.campaign?.effective_status || '',
             urlGroups: [],
+            copyGroups: [],
             adCount: 0,
           };
         row.adCount += 1;
@@ -188,9 +243,23 @@ export function MetaCampaignUrls() {
           if (group) group.ads.push(entry);
           else row.urlGroups.push({ url, ads: [entry] });
         }
+        for (const copyParts of creativeCopies(ad.creative)) {
+          const group = row.copyGroups.find(
+            (item) =>
+              item.primary === copyParts.primary &&
+              item.headline === copyParts.headline &&
+              item.description === copyParts.description
+          );
+          if (group) {
+            if (!group.ads.some((item) => item.id === entry.id)) group.ads.push(entry);
+          } else row.copyGroups.push({ ...copyParts, ads: [entry] });
+        }
         byCampaign.set(campaignId, row);
       }
-      for (const row of byCampaign.values()) row.urlGroups.sort((a, b) => b.ads.length - a.ads.length);
+      for (const row of byCampaign.values()) {
+        row.urlGroups.sort((a, b) => b.ads.length - a.ads.length);
+        row.copyGroups.sort((a, b) => b.ads.length - a.ads.length);
+      }
       return [...byCampaign.values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
     },
     [onlyActive]
@@ -233,7 +302,43 @@ export function MetaCampaignUrls() {
     }
   }
 
+  function exportCopiesCsv() {
+    const lines = [['Conta', 'ID da conta', 'Campanha', 'ID da campanha', 'Texto principal', 'Título', 'Descrição', 'Anúncios com essa copy', 'Nomes dos anúncios']];
+    for (const accountId of selected) {
+      const account = accountById.get(accountId);
+      for (const row of results[accountId] ?? []) {
+        for (const group of row.copyGroups) {
+          lines.push([
+            account?.name || accountId,
+            accountId,
+            row.name,
+            row.id,
+            group.primary,
+            group.headline,
+            group.description,
+            String(group.ads.length),
+            group.ads.map((ad) => ad.name).join(' | '),
+          ]);
+        }
+      }
+    }
+    downloadCsv(lines, 'campanhas_copys');
+  }
+
+  function downloadCsv(lines: string[][], prefix: string) {
+    const csv = '\uFEFF' + lines.map((line) => line.map(csvCell).join(',')).join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${prefix}_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
   function exportCsv() {
+    if (view === 'copies') return exportCopiesCsv();
     const lines = [['Conta', 'ID da conta', 'Campanha', 'ID da campanha', 'Status', 'URL', 'Anúncios com essa URL', 'Nomes dos anúncios']];
     for (const accountId of selected) {
       const account = accountById.get(accountId);
@@ -274,12 +379,28 @@ export function MetaCampaignUrls() {
             <Link2 size={20} />
           </span>
           <h2 className="mt-4 text-2xl font-semibold tracking-tight text-[var(--color-text)]">
-            Campanhas e URLs por conta
+            {view === 'urls' ? 'Campanhas e URLs por conta' : 'Copys dos anúncios por conta'}
           </h2>
           <p className="mt-2 text-sm leading-6 text-[var(--color-text-muted)]">
-            Escolha uma ou mais contas de anúncio e veja, campanha por campanha, qual URL de destino
-            os anúncios estão usando agora.
+            {view === 'urls'
+              ? 'Escolha uma ou mais contas de anúncio e veja, campanha por campanha, qual URL de destino os anúncios estão usando agora.'
+              : 'Escolha uma ou mais contas de anúncio e veja o texto principal, o título e a descrição de cada anúncio, agrupados por campanha.'}
           </p>
+          <div className="mt-4 inline-flex rounded-xl border border-[var(--color-border)] p-0.5">
+            {([['urls', 'URLs de destino'], ['copies', 'Copys']] as const).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setView(key)}
+                className={clsx(
+                  'rounded-lg px-3 py-1.5 text-xs font-semibold',
+                  view === key ? 'bg-[var(--color-brand)] text-white' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]'
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <label className="flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
@@ -367,14 +488,14 @@ export function MetaCampaignUrls() {
                 <input
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Filtrar campanha ou URL"
+                  placeholder={view === 'urls' ? 'Filtrar campanha ou URL' : 'Filtrar campanha ou texto da copy'}
                   className={clsx(inputClass, 'w-full pl-9')}
                 />
               </div>
 
               {loading && Object.keys(results).length === 0 && (
                 <p className="flex items-center gap-2 text-sm text-[var(--color-text-muted)]">
-                  <Loader2 size={15} className="animate-spin" /> Buscando campanhas e URLs na Meta...
+                  <Loader2 size={15} className="animate-spin" /> Buscando campanhas e anúncios na Meta...
                 </p>
               )}
 
@@ -385,7 +506,10 @@ export function MetaCampaignUrls() {
                     (row) =>
                       !term ||
                       row.name.toLowerCase().includes(term) ||
-                      row.urlGroups.some((group) => group.url.toLowerCase().includes(term))
+                      row.urlGroups.some((group) => group.url.toLowerCase().includes(term)) ||
+                      row.copyGroups.some((group) =>
+                        `${group.primary} ${group.headline} ${group.description}`.toLowerCase().includes(term)
+                      )
                   );
                   return (
                     <div key={accountId} className="overflow-hidden rounded-2xl border border-[var(--color-border)]">
@@ -416,6 +540,85 @@ export function MetaCampaignUrls() {
                               : 'Nenhuma campanha encontrada.'
                             : 'Carregando...'}
                         </p>
+                      ) : view === 'copies' ? (
+                        <div className="divide-y divide-[var(--color-border-soft)]">
+                          {rows.map((row) => (
+                            <div key={row.id} className="px-4 py-4">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="text-sm font-semibold text-[var(--color-text)]">{row.name}</p>
+                                <span className="rounded-full bg-[var(--color-panel-2)] px-2 py-0.5 text-[10px] text-[var(--color-text-muted)]">
+                                  {STATUS_LABEL[row.status] ?? (row.status || '—')}
+                                </span>
+                                <span className="text-[10px] text-[var(--color-text-faint)]">
+                                  {row.adCount} anúncio(s) · {row.copyGroups.length} copy(s) diferente(s)
+                                </span>
+                              </div>
+                              {row.copyGroups.length === 0 ? (
+                                <p className="mt-2 text-xs text-[var(--color-text-faint)]">
+                                  {row.adCount === 0 ? 'Sem anúncios' : 'Copy não encontrada nos criativos'}
+                                </p>
+                              ) : (
+                                <ul className="mt-3 grid gap-3 xl:grid-cols-2">
+                                  {row.copyGroups.map((group, index) => {
+                                    const key = `copy|${row.id}|${index}`;
+                                    const open = expanded.has(key);
+                                    const full = [group.primary, group.headline && `Título: ${group.headline}`, group.description && `Descrição: ${group.description}`]
+                                      .filter(Boolean)
+                                      .join('\n\n');
+                                    return (
+                                      <li key={key} className="rounded-xl border border-[var(--color-border-soft)] bg-[var(--color-bg)] p-3">
+                                        {group.primary && (
+                                          <p className="whitespace-pre-wrap break-words text-xs leading-5 text-[var(--color-text)]">{group.primary}</p>
+                                        )}
+                                        {group.headline && (
+                                          <p className="mt-2 text-xs">
+                                            <span className="text-[var(--color-text-faint)]">Título: </span>
+                                            <span className="font-semibold text-[var(--color-text)]">{group.headline}</span>
+                                          </p>
+                                        )}
+                                        {group.description && (
+                                          <p className="mt-1 text-xs">
+                                            <span className="text-[var(--color-text-faint)]">Descrição: </span>
+                                            <span className="text-[var(--color-text-muted)]">{group.description}</span>
+                                          </p>
+                                        )}
+                                        <div className="mt-2 flex items-center justify-between gap-2">
+                                          <button
+                                            onClick={() => toggleExpanded(key)}
+                                            className="inline-flex items-center gap-1 text-[10px] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                                          >
+                                            {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                                            {group.ads.length} anúncio(s) usam esta copy
+                                          </button>
+                                          <button
+                                            onClick={() => void copy(full)}
+                                            title="Copiar copy"
+                                            className="text-[var(--color-text-faint)] hover:text-[var(--color-text)]"
+                                          >
+                                            {copied === full ? <span className="text-[10px] text-emerald-400">Copiado</span> : <Copy size={12} />}
+                                          </button>
+                                        </div>
+                                        {open && (
+                                          <ul className="mt-1.5 space-y-0.5 border-l border-[var(--color-border)] pl-3 text-[11px] text-[var(--color-text-muted)]">
+                                            {group.ads.map((ad) => (
+                                              <li key={ad.id} className="truncate" title={ad.name}>
+                                                {ad.name}
+                                                {ad.adset && <span className="text-[var(--color-text-faint)]"> · {ad.adset}</span>}
+                                                {ad.status && ad.status !== 'ACTIVE' && (
+                                                  <span className="text-[var(--color-text-faint)]"> · {STATUS_LABEL[ad.status] ?? ad.status}</span>
+                                                )}
+                                              </li>
+                                            ))}
+                                          </ul>
+                                        )}
+                                      </li>
+                                    );
+                                  })}
+                                </ul>
+                              )}
+                            </div>
+                          ))}
+                        </div>
                       ) : (
                         <div className="overflow-x-auto">
                           <table className="w-full min-w-[640px] text-left text-xs">
