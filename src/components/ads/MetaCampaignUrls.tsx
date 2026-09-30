@@ -10,7 +10,7 @@ type GraphAd = {
   name?: string;
   effective_status?: string;
   campaign?: { id: string; name?: string; effective_status?: string };
-  adset?: { name?: string };
+  adset?: { name?: string; effective_status?: string };
   creative?: {
     object_story_spec?: Record<string, any>;
     asset_feed_spec?: Record<string, any>;
@@ -199,7 +199,7 @@ export function MetaCampaignUrls() {
           `${accountId}/ads`,
           {
             fields:
-              'id,name,effective_status,adset{name},campaign{id,name,effective_status},creative{object_story_spec,asset_feed_spec,link_url,object_url,body,title}',
+              'id,name,effective_status,adset{name,effective_status},campaign{id,name,effective_status},creative{object_story_spec,asset_feed_spec,link_url,object_url,body,title}',
             limit: 100,
             ...(filtering ? { filtering } : {}),
           },
@@ -243,7 +243,11 @@ export function MetaCampaignUrls() {
           if (group) group.ads.push(entry);
           else row.urlGroups.push({ url, ads: [entry] });
         }
-        for (const copyParts of creativeCopies(ad.creative)) {
+        // Copy só de anúncio E conjunto ativos (effective_status já considera a campanha).
+        const liveAd =
+          ad.effective_status === 'ACTIVE' &&
+          (!ad.adset?.effective_status || ad.adset.effective_status === 'ACTIVE');
+        for (const copyParts of liveAd ? creativeCopies(ad.creative) : []) {
           const group = row.copyGroups.find(
             (item) =>
               item.primary === copyParts.primary &&
@@ -403,10 +407,16 @@ export function MetaCampaignUrls() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <label className="flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
-            <input type="checkbox" checked={onlyActive} onChange={(event) => setOnlyActive(event.target.checked)} />
-            Só campanhas e anúncios ativos
-          </label>
+          {view === 'urls' ? (
+            <label className="flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
+              <input type="checkbox" checked={onlyActive} onChange={(event) => setOnlyActive(event.target.checked)} />
+              Só campanhas e anúncios ativos
+            </label>
+          ) : (
+            <span className="rounded-full bg-emerald-500/10 px-2.5 py-1 text-[11px] text-emerald-300">
+              Só conjuntos e anúncios ativos
+            </span>
+          )}
           <button
             onClick={() => void load()}
             disabled={loading || selected.length === 0}
@@ -504,12 +514,13 @@ export function MetaCampaignUrls() {
                   const account = accountById.get(accountId);
                   const rows = (results[accountId] ?? []).filter(
                     (row) =>
-                      !term ||
+                      (view !== 'copies' || row.copyGroups.length > 0) &&
+                      (!term ||
                       row.name.toLowerCase().includes(term) ||
                       row.urlGroups.some((group) => group.url.toLowerCase().includes(term)) ||
                       row.copyGroups.some((group) =>
                         `${group.primary} ${group.headline} ${group.description}`.toLowerCase().includes(term)
-                      )
+                      ))
                   );
                   return (
                     <div key={accountId} className="overflow-hidden rounded-2xl border border-[var(--color-border)]">
@@ -535,7 +546,9 @@ export function MetaCampaignUrls() {
                       {rows.length === 0 ? (
                         <p className="px-4 py-6 text-center text-xs text-[var(--color-text-faint)]">
                           {results[accountId]
-                            ? onlyActive
+                            ? view === 'copies'
+                              ? 'Nenhum anúncio ativo com copy nesta conta.'
+                              : onlyActive
                               ? 'Nenhuma campanha ativa nesta conta.'
                               : 'Nenhuma campanha encontrada.'
                             : 'Carregando...'}
@@ -550,7 +563,7 @@ export function MetaCampaignUrls() {
                                   {STATUS_LABEL[row.status] ?? (row.status || '—')}
                                 </span>
                                 <span className="text-[10px] text-[var(--color-text-faint)]">
-                                  {row.adCount} anúncio(s) · {row.copyGroups.length} copy(s) diferente(s)
+                                  {new Set(row.copyGroups.flatMap((group) => group.ads.map((ad) => ad.id))).size} anúncio(s) ativo(s) · {row.copyGroups.length} copy(s) diferente(s)
                                 </span>
                               </div>
                               {row.copyGroups.length === 0 ? (
