@@ -67,7 +67,6 @@ function App() {
                 os demais a AgencyToolRoute bloqueia inclusive acesso direto por URL. */}
             <Route element={<AgencyToolRoute tool="disparo.dashboard" />}>
               <Route element={<AdminShell />}>
-                <Route path="/agency/disparo" element={<Navigate to="/agency/disparo/dashboard" replace />} />
                 <Route path="/agency/disparo/dashboard" element={<DisparoDashboardPage />} />
               </Route>
             </Route>
@@ -78,7 +77,7 @@ function App() {
             <Route element={<AgencyToolRoute tool="disparo.demands" />}><Route element={<AdminShell />}><Route path="/agency/disparo/demandas" element={<DisparoKanbanPage />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="disparo.sanitizer" />}><Route element={<AdminShell />}><Route path="/agency/disparo/higienizador" element={<ListSanitizerPage />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="disparo.report" />}><Route element={<AdminShell />}><Route path="/agency/disparo/relatorio" element={<DisparoDashboardPage reportOnly />} /></Route></Route>
-            <Route element={<AnyAgencyToolRoute />}><Route element={<AdminShell />}><Route path="/agency/ferramentas" element={<AgencyToolsHubPage />} /></Route></Route>
+            <Route element={<AnyAgencyToolRoute />}><Route element={<AdminShell />}><Route path="/agency/ferramentas" element={<AgencyToolsHubPage section="ferramentas" />} /><Route path="/agency/disparo" element={<AgencyToolsHubPage section="disparos" />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="meta_ads" />}><Route element={<AdminShell />}><Route path="/agency/ferramentas/meta-ads" element={<MetaAdsToolPage />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="zpl_pdf" />}><Route element={<AdminShell />}><Route path="/agency/ferramentas/zpl-pdf" element={<ZplPdfToolPage />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="consumer_success" />}><Route element={<AdminShell />}><Route path="/agency/ferramentas/consumer-success" element={<ConsumerSuccessPage />} /></Route></Route>

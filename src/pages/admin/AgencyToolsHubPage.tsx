@@ -45,16 +45,36 @@ const toolMeta: Record<AgencyToolKey, { icon: ComponentType<{ size?: number }>; 
   'disparo.report': { icon: FileBarChart, tone: 'warn', description: 'Relatório do fornecedor de disparos.' },
 };
 
-/**
- * Hub das ferramentas: o sidebar continua com a lista para atalho rápido, e
- * clicar em "Ferramentas" abre esta grade com tudo o que o usuário pode usar.
- */
-export function AgencyToolsHubPage() {
-  const { canUseAgencyTool } = useAuth();
+const sections = {
+  ferramentas: {
+    group: 'Ferramentas da agência',
+    title: 'Ferramentas',
+    description: 'Escolha a ferramenta que você quer abrir.',
+    icon: Wrench,
+    eyebrow: 'Ferramenta',
+  },
+  disparos: {
+    group: 'Disparos',
+    title: 'Disparos',
+    description: 'Tudo da operação de disparo em um lugar: links, templates, transmissões e listas.',
+    icon: Send,
+    eyebrow: 'Disparos',
+  },
+} as const;
 
-  // Ferramentas da agência primeiro, Disparos depois.
-  const groups = [...agencyToolGroups]
-    .sort((a, b) => (a.label === 'Disparos' ? 1 : 0) - (b.label === 'Disparos' ? 1 : 0))
+export type AgencyHubSection = keyof typeof sections;
+
+/**
+ * Hub de uma seção da agência: o sidebar continua com a lista para atalho
+ * rápido, e clicar em "Ferramentas" ou "Disparos" abre a grade só daquela seção.
+ */
+export function AgencyToolsHubPage({ section }: { section: AgencyHubSection }) {
+  const { canUseAgencyTool } = useAuth();
+  const config = sections[section];
+  const HeaderIcon = config.icon;
+
+  const groups = agencyToolGroups
+    .filter((group) => group.label === config.group)
     .map((group) => ({ ...group, tools: group.tools.filter((tool) => canUseAgencyTool(tool.key)) }))
     .filter((group) => group.tools.length > 0);
 
@@ -62,16 +82,15 @@ export function AgencyToolsHubPage() {
     <main className="flex flex-col gap-8 p-4 sm:p-6">
       <header>
         <div className="flex items-center gap-2">
-          <Wrench size={20} className="text-[var(--color-brand)]" />
-          <h1 className="text-xl font-semibold text-[var(--color-text)]">Ferramentas</h1>
+          <HeaderIcon size={20} className="text-[var(--color-brand)]" />
+          <h1 className="text-xl font-semibold text-[var(--color-text)]">{config.title}</h1>
         </div>
-        <p className="mt-1 text-sm text-[var(--color-text-muted)]">Escolha a ferramenta que você quer abrir.</p>
+        <p className="mt-1 text-sm text-[var(--color-text-muted)]">{config.description}</p>
       </header>
 
       {groups.map((group) => (
         <section key={group.label}>
-          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[var(--color-brand)]">{group.label}</p>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {group.tools.map((tool) => {
               const meta = toolMeta[tool.key];
               const palette = tones[meta.tone];
@@ -89,7 +108,7 @@ export function AgencyToolsHubPage() {
                     </span>
                     <ArrowUpRight size={15} className="text-[var(--color-text-faint)] transition group-hover:text-[var(--color-text)]" />
                   </div>
-                  <p className="relative mt-4 text-[9px] font-bold uppercase tracking-wider text-[var(--color-text-faint)]">{group.label === 'Disparos' ? 'Disparos' : 'Ferramenta'}</p>
+                  <p className="relative mt-4 text-[9px] font-bold uppercase tracking-wider text-[var(--color-text-faint)]">{config.eyebrow}</p>
                   <p className="relative mt-1 text-sm font-semibold text-[var(--color-text)]">{tool.label}</p>
                   <p className="relative mt-2 text-[11px] leading-relaxed text-[var(--color-text-muted)]">{meta.description}</p>
                   {tool.key === 'meta_ads' && (
@@ -109,7 +128,7 @@ export function AgencyToolsHubPage() {
 
       {groups.length === 0 && (
         <p className="rounded-2xl border border-dashed border-[var(--color-border)] px-5 py-14 text-center text-sm text-[var(--color-text-muted)]">
-          Nenhuma ferramenta liberada para o seu usuário. Fale com um administrador.
+          Nenhum item desta seção está liberado para o seu usuário. Fale com um administrador.
         </p>
       )}
     </main>

@@ -22,7 +22,7 @@ import { useState } from 'react';
 import { useAuth } from '../../providers/AuthProvider';
 import { useProjectOptional } from '../../state/ProjectContext';
 import { ProjectContextPanel } from './ProjectContextPanel';
-import { agencyTools, type AgencyToolKey } from '../../services/agencyTools.service';
+import { type AgencyToolKey } from '../../services/agencyTools.service';
 
 interface ProjectNavItem {
   path: string;
@@ -99,17 +99,15 @@ export function Sidebar({ showProjectContext = true }: { showProjectContext?: bo
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const projectCtx = useProjectOptional();
   const canEditSettings = isAdmin || projectCtx?.permissions.can_edit_settings;
-  const clientTools = agencyTools.filter((tool) => agencyToolAccess.includes(tool.key));
   const visibleAgencyNav: AdminNavItem[] = isAdmin
     ? adminNav
-    : clientTools.length > 0
-      ? [{
-          to: '/agency/ferramentas',
-          icon: Wrench,
-          label: 'Ferramentas',
-          children: clientTools.map((tool) => ({ to: tool.path, label: tool.label, tool: tool.key })),
-        }]
-      : [];
+    : adminNav
+        .filter((item) => item.children?.length)
+        .map((item) => ({
+          ...item,
+          children: item.children?.filter((child) => child.tool && agencyToolAccess.includes(child.tool)),
+        }))
+        .filter((item) => item.children && item.children.length > 0);
 
   return (
     <aside className="hidden w-60 shrink-0 flex-col overflow-y-auto border-r border-[var(--color-border)] bg-[var(--color-panel)] p-4 lg:flex">
