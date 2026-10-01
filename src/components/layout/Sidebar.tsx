@@ -104,7 +104,7 @@ export function Sidebar({ showProjectContext = true }: { showProjectContext?: bo
     ? adminNav
     : clientTools.length > 0
       ? [{
-          to: clientTools[0].path,
+          to: '/agency/ferramentas',
           icon: Wrench,
           label: 'Ferramentas',
           children: clientTools.map((tool) => ({ to: tool.path, label: tool.label, tool: tool.key })),

@@ -49,6 +49,16 @@ export function AgencyToolRoute({ tool }: { tool: AgencyToolKey }) {
   return <Outlet />;
 }
 
+/** Libera páginas comuns às ferramentas (ex.: hub) para quem tem ao menos uma. */
+export function AnyAgencyToolRoute() {
+  const { isAdmin, agencyToolAccess, loading } = useAuth();
+
+  if (loading) return <LoadingView />;
+  if (!isAdmin && agencyToolAccess.length === 0) return <Navigate to="/projects" replace />;
+
+  return <Outlet />;
+}
+
 /**
  * Valida o projeto da URL.
  *

@@ -1,7 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './providers/AuthProvider';
 import { FiltersProvider } from './state/FiltersContext';
-import { ProtectedRoute, AdminRoute, AgencyToolRoute } from './routes/guards';
+import { ProtectedRoute, AdminRoute, AgencyToolRoute, AnyAgencyToolRoute } from './routes/guards';
 
 import { LoginPage } from './pages/auth/LoginPage';
 import { ResetPasswordPage } from './pages/auth/ResetPasswordPage';
@@ -37,6 +37,7 @@ import { AdminProjectsPage } from './pages/admin/AdminProjectsPage';
 import { AdminUsersPage } from './pages/admin/AdminUsersPage';
 import { AuditLogPage } from './pages/admin/AuditLogPage';
 import { MetaAdsToolPage } from './pages/admin/MetaAdsToolPage';
+import { AgencyToolsHubPage } from './pages/admin/AgencyToolsHubPage';
 import { ZplPdfToolPage } from './pages/admin/ZplPdfToolPage';
 import { ConsumerSuccessPage } from './pages/admin/ConsumerSuccessPage';
 import { UtmTesterPage } from './pages/admin/UtmTesterPage';
@@ -77,6 +78,7 @@ function App() {
             <Route element={<AgencyToolRoute tool="disparo.demands" />}><Route element={<AdminShell />}><Route path="/agency/disparo/demandas" element={<DisparoKanbanPage />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="disparo.sanitizer" />}><Route element={<AdminShell />}><Route path="/agency/disparo/higienizador" element={<ListSanitizerPage />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="disparo.report" />}><Route element={<AdminShell />}><Route path="/agency/disparo/relatorio" element={<DisparoDashboardPage reportOnly />} /></Route></Route>
+            <Route element={<AnyAgencyToolRoute />}><Route element={<AdminShell />}><Route path="/agency/ferramentas" element={<AgencyToolsHubPage />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="meta_ads" />}><Route element={<AdminShell />}><Route path="/agency/ferramentas/meta-ads" element={<MetaAdsToolPage />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="zpl_pdf" />}><Route element={<AdminShell />}><Route path="/agency/ferramentas/zpl-pdf" element={<ZplPdfToolPage />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="consumer_success" />}><Route element={<AdminShell />}><Route path="/agency/ferramentas/consumer-success" element={<ConsumerSuccessPage />} /></Route></Route>
@@ -102,7 +104,6 @@ function App() {
               <Route element={<AdminShell />}>
                 <Route path="/agency" element={<AgencyHomePage />} />
                 <Route path="/agency/kanban" element={<AgencyKanbanPage />} />
-                <Route path="/agency/ferramentas" element={<Navigate to="/agency/ferramentas/meta-ads" replace />} />
                 <Route path="/agency/configuracoes" element={<AgencySettingsPage />} />
                 <Route path="/admin/clients" element={<ClientsListPage />} />
                 <Route path="/admin/clients/:clientId" element={<ClientDetailPage />} />
