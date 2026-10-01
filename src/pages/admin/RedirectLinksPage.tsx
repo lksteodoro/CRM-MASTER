@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, Clock3, Copy, ExternalLink, Link2, Loader2, Pencil, Plus, Power, Repeat2, Trash2, X } from 'lucide-react';
+import { Check, Clock3, Scale, Copy, ExternalLink, Link2, Loader2, Pencil, Plus, Power, Repeat2, Trash2, X } from 'lucide-react';
 import { listClients } from '../../services/clients.service';
 import {
   createRedirectLink,
@@ -13,13 +13,14 @@ import {
 } from '../../services/redirectLinks.service';
 import type { ClientRow } from '../../integrations/supabase/database.types';
 import { EmptyView, ErrorView, LoadingView } from '../../components/ui/StateView';
+import { addDestination, equalState, removeDestination, setWeight, splitEvenly, weightsTotal } from '../../lib/redirectWeights';
 import { RedirectClickAnalytics } from '../../components/disparo/RedirectClickAnalytics';
 
 const inputClass = 'w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-faint)] focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/45';
 const labelClass = 'mb-1 block text-xs font-medium text-[var(--color-text-muted)]';
 
 function emptyForm(clientId = ''): RedirectLinkInput {
-  return { client_id: clientId, name: '', slug: '', strategy: 'single', delay_seconds: 0, active: true, paid_ads_locked: false, destinations: [{ label: 'Destino principal', target_url: '' }] };
+  return { client_id: clientId, name: '', slug: '', strategy: 'single', balance_mode: 'equal', delay_seconds: 0, active: true, paid_ads_locked: false, destinations: [{ label: 'Destino principal', target_url: '', weight: 100 }] };
 }
 
 export function RedirectLinksPage() {
@@ -98,13 +99,13 @@ export function RedirectLinksPage() {
         <div className="flex flex-col gap-5">
           {groups.map(({ client, links: clientLinks }) => (
             <section key={client.id} aria-labelledby={`redirect-client-${client.id}`} className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] p-4 sm:p-5">
-              <div className="mb-4 flex items-center justify-between"><div><h2 id={`redirect-client-${client.id}`} className="font-semibold text-[var(--color-text)]">{client.name}</h2><p className="text-xs text-[var(--color-text-muted)]">{clientLinks.length} link{clientLinks.length === 1 ? '' : 's'} configurado{clientLinks.length === 1 ? '' : 's'}</p></div><button type="button" onClick={() => setEditing({ ...clientLinks[0], id: '', name: '', slug: '', hit_count: 0, last_accessed_at: null, destinations: [{ id: '', redirect_link_id: '', label: 'Destino principal', target_url: '', position: 0, hit_count: 0, created_at: '' }] })} className="text-xs text-[var(--color-brand)] hover:underline">+ Link para este cliente</button></div>
+              <div className="mb-4 flex items-center justify-between"><div><h2 id={`redirect-client-${client.id}`} className="font-semibold text-[var(--color-text)]">{client.name}</h2><p className="text-xs text-[var(--color-text-muted)]">{clientLinks.length} link{clientLinks.length === 1 ? '' : 's'} configurado{clientLinks.length === 1 ? '' : 's'}</p></div><button type="button" onClick={() => setEditing({ ...clientLinks[0], id: '', name: '', slug: '', hit_count: 0, last_accessed_at: null, destinations: [{ id: '', redirect_link_id: '', label: 'Destino principal', target_url: '', position: 0, hit_count: 0, weight: 100, wrr_current: 0, created_at: '' }] })} className="text-xs text-[var(--color-brand)] hover:underline">+ Link para este cliente</button></div>
               <div className="grid gap-3 lg:grid-cols-2">
                 {clientLinks.map((link) => (
                   <article key={link.id} className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] p-4">
                     <div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="flex items-center gap-2"><h3 className="truncate text-sm font-semibold text-[var(--color-text)]">{link.name}</h3><span className={`rounded-full px-2 py-0.5 text-[10px] ${link.active ? 'bg-[var(--color-good-soft)] text-[var(--color-good)]' : 'bg-[var(--color-panel-2)] text-[var(--color-text-faint)]'}`}>{link.active ? 'Ativo' : 'Pausado'}</span></div><p className="mt-1 truncate font-mono text-xs text-[var(--color-brand)]">{window.location.origin}/r/{link.slug}</p></div><button type="button" onClick={() => setEditing(link)} className="rounded-lg p-2 text-[var(--color-text-muted)] hover:bg-[var(--color-panel-2)]" aria-label={`Editar ${link.name}`}><Pencil size={14} /></button></div>
-                    <div className="mt-3 flex flex-wrap gap-2 text-[10px] text-[var(--color-text-muted)]"><span className="inline-flex items-center gap-1 rounded-full bg-[var(--color-panel-2)] px-2 py-1"><Clock3 size={11} /> {link.delay_seconds}s</span><span className="inline-flex items-center gap-1 rounded-full bg-[var(--color-panel-2)] px-2 py-1"><Repeat2 size={11} /> {link.strategy === 'round_robin' ? 'Loop' : 'Destino fixo'}</span>{link.paid_ads_locked && <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/10 px-2 py-1 font-semibold text-amber-400">Anúncio pago · destino travado</span>}<span className="rounded-full bg-[var(--color-panel-2)] px-2 py-1">{link.hit_count.toLocaleString('pt-BR')} acessos</span></div>
-                    <div className="mt-3 space-y-1 border-t border-[var(--color-border-soft)] pt-3">{link.destinations.map((destination, index) => <p key={destination.id} className="flex min-w-0 items-center gap-2 text-xs"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--color-brand-soft)] text-[10px] text-[var(--color-brand)]">{index + 1}</span><span className="truncate text-[var(--color-text-muted)]">{destination.label || destination.target_url}</span><span className="ml-auto shrink-0 text-[10px] text-[var(--color-text-faint)]">{destination.hit_count} acessos</span></p>)}</div>
+                    <div className="mt-3 flex flex-wrap gap-2 text-[10px] text-[var(--color-text-muted)]"><span className="inline-flex items-center gap-1 rounded-full bg-[var(--color-panel-2)] px-2 py-1"><Clock3 size={11} /> {link.delay_seconds}s</span><span className="inline-flex items-center gap-1 rounded-full bg-[var(--color-panel-2)] px-2 py-1"><Repeat2 size={11} /> {link.strategy === 'round_robin' ? (link.balance_mode === 'custom' ? 'Loop personalizado' : 'Loop igual') : 'Destino fixo'}</span>{link.paid_ads_locked && <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/10 px-2 py-1 font-semibold text-amber-400">Anúncio pago · destino travado</span>}<span className="rounded-full bg-[var(--color-panel-2)] px-2 py-1">{link.hit_count.toLocaleString('pt-BR')} acessos</span></div>
+                    <div className="mt-3 space-y-1 border-t border-[var(--color-border-soft)] pt-3">{link.destinations.map((destination, index) => <p key={destination.id} className="flex min-w-0 items-center gap-2 text-xs"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--color-brand-soft)] text-[10px] text-[var(--color-brand)]">{index + 1}</span><span className="truncate text-[var(--color-text-muted)]">{destination.label || destination.target_url}</span><span className="ml-auto shrink-0 text-[10px] text-[var(--color-text-faint)]">{link.strategy === 'round_robin' && link.balance_mode === 'custom' && <span className="mr-1.5 font-semibold text-[var(--color-brand)]">{destination.weight}%</span>}{destination.hit_count} acessos</span></p>)}</div>
                     <div className="mt-4 flex flex-wrap gap-2"><button type="button" onClick={() => void copyLink(link)} className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text)] hover:bg-[var(--color-panel-2)]">{copiedId === link.id ? <Check size={13} className="text-[var(--color-good)]" /> : <Copy size={13} />}{copiedId === link.id ? 'Copiado' : 'Copiar'}</button><a href={`/r/${link.slug}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text)] hover:bg-[var(--color-panel-2)]"><ExternalLink size={13} /> Testar</a><button type="button" onClick={() => void toggleActive(link)} disabled={Boolean(mutatingId)} className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-muted)]"><Power size={13} /> {link.active ? 'Pausar' : 'Ativar'}</button><button type="button" onClick={() => void remove(link)} disabled={Boolean(mutatingId)} className="ml-auto inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-[var(--color-bad)] hover:bg-[var(--color-bad-soft)]">{mutatingId === link.id ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} Excluir</button></div>
                   </article>
                 ))}
@@ -120,14 +121,44 @@ export function RedirectLinksPage() {
 }
 
 function RedirectLinkModal({ clients, link, initialClientId, onClose, onSaved }: { clients: ClientRow[]; link: RedirectLinkWithDestinations | null; initialClientId: string; onClose: () => void; onSaved: (link: RedirectLinkWithDestinations) => void }) {
-  const [form, setForm] = useState<RedirectLinkInput>(() => link ? { client_id: link.client_id, name: link.name, slug: link.slug, strategy: link.strategy, delay_seconds: link.delay_seconds, active: link.active, paid_ads_locked: link.paid_ads_locked, destinations: link.destinations.map((destination) => ({ label: destination.label, target_url: destination.target_url })) } : emptyForm(initialClientId));
+  const [form, setForm] = useState<RedirectLinkInput>(() => link ? { client_id: link.client_id, name: link.name, slug: link.slug, strategy: link.strategy, delay_seconds: link.delay_seconds, active: link.active, paid_ads_locked: link.paid_ads_locked, balance_mode: link.balance_mode ?? 'equal', destinations: link.destinations.map((destination) => ({ label: destination.label, target_url: destination.target_url, weight: destination.weight ?? 0 })) } : emptyForm(initialClientId));
+  // Destinos já salvos no modo personalizado entram "fixos" para preservar as porcentagens.
+  const [pinned, setPinned] = useState<boolean[]>(() => (link?.balance_mode === 'custom' ? link.destinations.map(() => true) : (link?.destinations ?? [null]).map(() => false)));
+  const isLoop = form.strategy === 'round_robin' && !form.paid_ads_locked && form.destinations.length > 1;
+  const isCustom = isLoop && form.balance_mode === 'custom';
+  const total = weightsTotal(form.destinations.map((destination) => destination.weight));
+
+  function applyWeights(next: { weights: number[]; pinned: boolean[] }) {
+    setPinned(next.pinned);
+    setForm((current) => ({ ...current, destinations: current.destinations.map((destination, index) => ({ ...destination, weight: next.weights[index] ?? 0 })) }));
+  }
+  function setBalanceMode(mode: RedirectLinkInput['balance_mode']) {
+    const even = equalState(form.destinations.length);
+    setPinned(even.pinned);
+    setForm((current) => ({ ...current, balance_mode: mode, destinations: current.destinations.map((destination, index) => ({ ...destination, weight: even.weights[index] })) }));
+  }
+  function changeWeight(index: number, value: number) {
+    applyWeights(setWeight({ weights: form.destinations.map((destination) => destination.weight), pinned }, index, value));
+  }
+  function addRow() {
+    const nextWeights = isCustom ? addDestination({ weights: form.destinations.map((destination) => destination.weight), pinned }) : equalState(form.destinations.length + 1);
+    setPinned(nextWeights.pinned);
+    setForm((current) => ({ ...current, destinations: [...current.destinations, { label: `Destino ${current.destinations.length + 1}`, target_url: '', weight: 0 }].map((destination, index) => ({ ...destination, weight: nextWeights.weights[index] ?? 0 })) }));
+  }
+  function removeRow(index: number) {
+    const nextWeights = isCustom ? removeDestination({ weights: form.destinations.map((destination) => destination.weight), pinned }, index) : equalState(form.destinations.length - 1);
+    setPinned(nextWeights.pinned);
+    setForm((current) => ({ ...current, destinations: current.destinations.filter((_, itemIndex) => itemIndex !== index).map((destination, itemIndex) => ({ ...destination, weight: nextWeights.weights[itemIndex] ?? 0 })) }));
+  }
   const [slugTouched, setSlugTouched] = useState(Boolean(link));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault(); setSaving(true); setError(null);
-    try { onSaved(link ? await updateRedirectLink(link.id, form) : await createRedirectLink(form)); }
+    const even = splitEvenly(100, form.destinations.length);
+    const payload: RedirectLinkInput = isCustom ? form : { ...form, balance_mode: 'equal', destinations: form.destinations.map((destination, index) => ({ ...destination, weight: even[index] })) };
+    try { onSaved(link ? await updateRedirectLink(link.id, payload) : await createRedirectLink(payload)); }
     catch (caught) { setError(caught instanceof Error ? caught.message : 'Não foi possível salvar o redirecionador.'); }
     finally { setSaving(false); }
   }
@@ -142,7 +173,34 @@ function RedirectLinkModal({ clients, link, initialClientId, onClose, onSaved }:
       <input type="checkbox" checked={form.paid_ads_locked} onChange={(event) => setForm((current) => ({ ...current, paid_ads_locked: event.target.checked, strategy: event.target.checked ? 'single' : current.strategy, destinations: event.target.checked ? current.destinations.slice(0, 1) : current.destinations }))} className="mt-0.5" />
       <span className="text-xs leading-relaxed text-[var(--color-text-muted)]"><strong className="text-[var(--color-text)]">Este link sera usado como destino de anuncio pago</strong><br />Trava o link em um unico destino, que nao podera mais ser alterado. A Meta trata destino que muda apos a aprovacao como cloaking e bloqueia a conta de anuncios. Para trocar o destino depois, crie um novo link.</span>
     </label>
-    <div className="mt-5"><div className="flex items-center justify-between"><div><h3 className="text-sm font-medium text-[var(--color-text)]">Destinos</h3><p className="text-[11px] text-[var(--color-text-muted)]">No modo loop, cada acesso usa o próximo destino e recomeça ao chegar no fim.</p></div>{!form.paid_ads_locked && <button type="button" onClick={() => setForm((current) => ({ ...current, destinations: [...current.destinations, { label: `Destino ${current.destinations.length + 1}`, target_url: '' }] }))} className="text-xs text-[var(--color-brand)] hover:underline">+ Adicionar destino</button>}</div><div className="mt-3 space-y-2">{form.destinations.map((destination, index) => <div key={index} className="grid gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] p-3 sm:grid-cols-[36px_0.7fr_1.5fr_auto]"><span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--color-brand-soft)] text-xs font-semibold text-[var(--color-brand)]">{index + 1}</span><input value={destination.label ?? ''} onChange={(event) => setForm((current) => ({ ...current, destinations: current.destinations.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item) }))} className={inputClass} placeholder="Nome do destino" /><input type="url" value={destination.target_url} onChange={(event) => setForm((current) => ({ ...current, destinations: current.destinations.map((item, itemIndex) => itemIndex === index ? { ...item, target_url: event.target.value } : item) }))} className={inputClass} placeholder="https://destino.com/pagina" required />{form.destinations.length > 1 && <button type="button" onClick={() => setForm((current) => ({ ...current, destinations: current.destinations.filter((_, itemIndex) => itemIndex !== index) }))} className="rounded-lg p-2 text-[var(--color-bad)] hover:bg-[var(--color-bad-soft)]" aria-label={`Remover destino ${index + 1}`}><Trash2 size={14} /></button>}</div>)}</div></div>
-    {error && <p role="alert" className="mt-4 text-xs text-[var(--color-bad)]">{error}</p>}<div className="mt-5 flex justify-end gap-2"><button type="button" onClick={onClose} className="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm text-[var(--color-text-muted)]">Cancelar</button><button type="submit" disabled={saving} className="flex items-center gap-2 rounded-lg bg-[var(--color-brand)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50">{saving && <Loader2 size={14} className="animate-spin" />}{link ? 'Salvar alterações' : 'Criar link'}</button></div>
+    <div className="mt-5"><div className="flex items-center justify-between"><div><h3 className="text-sm font-medium text-[var(--color-text)]">Destinos</h3><p className="text-[11px] text-[var(--color-text-muted)]">{isCustom ? 'Cada destino recebe a porcentagem definida, com os acessos intercalados.' : 'No modo loop, cada acesso usa o próximo destino e recomeça ao chegar no fim.'}</p></div>{!form.paid_ads_locked && <button type="button" onClick={addRow} className="text-xs text-[var(--color-brand)] hover:underline">+ Adicionar destino</button>}</div>
+    {isLoop && (
+      <div className="mt-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-xs font-medium text-[var(--color-text)]"><Scale size={14} className="text-[var(--color-brand)]" /> Balanceamento</div>
+          <div className="inline-flex rounded-lg border border-[var(--color-border)] p-0.5">
+            {([['equal', 'Igual para todos'], ['custom', 'Personalizado']] as const).map(([mode, label]) => (
+              <button key={mode} type="button" onClick={() => setBalanceMode(mode)} className={`rounded-md px-2.5 py-1 text-xs ${form.balance_mode === mode ? 'bg-[var(--color-brand)] text-white' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]'}`}>{label}</button>
+            ))}
+          </div>
+        </div>
+        <div className="mt-3 flex h-2.5 overflow-hidden rounded-full bg-[var(--color-panel-2)]">
+          {form.destinations.map((destination, index) => {
+            const share = isCustom ? destination.weight : 100 / form.destinations.length;
+            return <div key={index} title={`${destination.label || `Destino ${index + 1}`}: ${Math.round(share)}%`} style={{ width: `${share}%`, opacity: 1 - (index % 4) * 0.2 }} className="h-full border-r border-[var(--color-bg)] bg-[var(--color-brand)] last:border-r-0" />;
+          })}
+        </div>
+        {isCustom ? (
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+            <span className={total === 100 ? 'text-[var(--color-good)]' : 'font-semibold text-[var(--color-bad)]'}>Total: {total}%{total !== 100 && ' — precisa fechar 100%'}</span>
+            <span className="text-[var(--color-text-faint)]">Arraste um destino: os não ajustados dividem o resto igualmente.</span>
+            <button type="button" onClick={() => setBalanceMode('custom')} className="text-[var(--color-brand)] hover:underline">Dividir igualmente</button>
+          </div>
+        ) : (
+          <p className="mt-2 text-[11px] text-[var(--color-text-muted)]">Cada destino recebe {Math.floor(100 / form.destinations.length)}% dos acessos.</p>
+        )}
+      </div>
+    )}<div className="mt-3 space-y-2">{form.destinations.map((destination, index) => <div key={index} className="grid gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] p-3 sm:grid-cols-[36px_0.7fr_1.5fr_auto]"><span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--color-brand-soft)] text-xs font-semibold text-[var(--color-brand)]">{index + 1}</span><input value={destination.label ?? ''} onChange={(event) => setForm((current) => ({ ...current, destinations: current.destinations.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item) }))} className={inputClass} placeholder="Nome do destino" /><input type="url" value={destination.target_url} onChange={(event) => setForm((current) => ({ ...current, destinations: current.destinations.map((item, itemIndex) => itemIndex === index ? { ...item, target_url: event.target.value } : item) }))} className={inputClass} placeholder="https://destino.com/pagina" required />{form.destinations.length > 1 && <button type="button" onClick={() => removeRow(index)} className="rounded-lg p-2 text-[var(--color-bad)] hover:bg-[var(--color-bad-soft)]" aria-label={`Remover destino ${index + 1}`}><Trash2 size={14} /></button>}{isCustom && <div className="flex items-center gap-3 sm:col-span-4"><input type="range" min={0} max={100} step={1} value={destination.weight} onChange={(event) => changeWeight(index, event.target.valueAsNumber)} aria-label={`Porcentagem do destino ${index + 1}`} className="flex-1 accent-[var(--color-brand)]" /><div className="relative w-20"><input type="number" min={0} max={100} value={destination.weight} onChange={(event) => changeWeight(index, event.target.valueAsNumber)} className={`${inputClass} pr-6 text-right`} aria-label={`Porcentagem do destino ${index + 1} em número`} /><span className="absolute right-2 top-2 text-xs text-[var(--color-text-faint)]">%</span></div><span className={`w-14 text-[10px] ${pinned[index] ? 'text-[var(--color-brand)]' : 'text-[var(--color-text-faint)]'}`}>{pinned[index] ? 'ajustado' : 'automático'}</span></div>}</div>)}</div></div>
+    {error && <p role="alert" className="mt-4 text-xs text-[var(--color-bad)]">{error}</p>}<div className="mt-5 flex justify-end gap-2"><button type="button" onClick={onClose} className="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm text-[var(--color-text-muted)]">Cancelar</button><button type="submit" disabled={saving || (isCustom && total !== 100)} className="flex items-center gap-2 rounded-lg bg-[var(--color-brand)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50">{saving && <Loader2 size={14} className="animate-spin" />}{link ? 'Salvar alterações' : 'Criar link'}</button></div>
   </form></div>;
 }

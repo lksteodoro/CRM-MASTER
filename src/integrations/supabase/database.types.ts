@@ -1489,6 +1489,7 @@ export type Database = {
           delay_seconds: number;
           active: boolean;
           paid_ads_locked: boolean;
+          balance_mode: 'equal' | 'custom';
           hit_count: number;
           last_accessed_at: string | null;
           created_by: string | null;
@@ -1505,6 +1506,7 @@ export type Database = {
           delay_seconds?: number;
           active?: boolean;
           paid_ads_locked?: boolean;
+          balance_mode?: 'equal' | 'custom';
           hit_count?: number;
           last_accessed_at?: string | null;
           created_by?: string | null;
@@ -1521,6 +1523,7 @@ export type Database = {
           delay_seconds?: number;
           active?: boolean;
           paid_ads_locked?: boolean;
+          balance_mode?: 'equal' | 'custom';
           hit_count?: number;
           last_accessed_at?: string | null;
           created_by?: string | null;
@@ -1538,6 +1541,8 @@ export type Database = {
           target_url: string;
           position: number;
           hit_count: number;
+          weight: number;
+          wrr_current: number;
           created_at: string;
         };
         Insert: {
@@ -1547,6 +1552,8 @@ export type Database = {
           target_url: string;
           position?: number;
           hit_count?: number;
+          weight?: number;
+          wrr_current?: number;
           created_at?: string;
         };
         Update: {
@@ -1556,6 +1563,8 @@ export type Database = {
           target_url?: string;
           position?: number;
           hit_count?: number;
+          weight?: number;
+          wrr_current?: number;
           created_at?: string;
         };
         Relationships: [];

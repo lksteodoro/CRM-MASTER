@@ -8,6 +8,8 @@ export interface RedirectLinkWithDestinations extends RedirectLinkRow {
 export interface RedirectDestinationInput {
   label: string | null;
   target_url: string;
+  /** Porcentagem do tráfego no modo loop personalizado (0–100). */
+  weight: number;
 }
 
 export interface RedirectLinkInput {
@@ -15,6 +17,8 @@ export interface RedirectLinkInput {
   name: string;
   slug: string;
   strategy: RedirectLinkRow['strategy'];
+  /** Loop: dividir igual entre os destinos ou por porcentagem personalizada. */
+  balance_mode: RedirectLinkRow['balance_mode'];
   delay_seconds: number;
   active: boolean;
   /**
@@ -52,7 +56,11 @@ function normalizedInput(input: RedirectLinkInput): RedirectLinkInput {
     throw new Error('O tempo de redirecionamento deve ficar entre 0 e 300 segundos.');
   }
   const destinations = input.destinations
-    .map((destination) => ({ label: destination.label?.trim() || null, target_url: destination.target_url.trim() }))
+    .map((destination) => ({
+      label: destination.label?.trim() || null,
+      target_url: destination.target_url.trim(),
+      weight: Math.round(Number(destination.weight) || 0),
+    }))
     .filter((destination) => destination.target_url);
   if (destinations.length === 0) throw new Error('Adicione pelo menos um destino.');
   destinations.forEach((destination) => {
@@ -66,6 +74,14 @@ function normalizedInput(input: RedirectLinkInput): RedirectLinkInput {
   });
   // Link de tráfego pago: um destino, sem rodízio. É o que separa um
   // encurtador legítimo de um redirecionamento dinâmico aos olhos da Meta.
+  const balanceMode = input.strategy === 'round_robin' && destinations.length > 1 ? input.balance_mode : 'equal';
+  if (balanceMode === 'custom') {
+    if (destinations.some((destination) => destination.weight < 0 || destination.weight > 100)) {
+      throw new Error('Cada porcentagem precisa ficar entre 0 e 100.');
+    }
+    const total = destinations.reduce((sum, destination) => sum + destination.weight, 0);
+    if (total !== 100) throw new Error(`A soma das porcentagens precisa ser 100% (está em ${total}%).`);
+  }
   if (input.paid_ads_locked) {
     if (destinations.length > 1) {
       throw new Error('Link de anúncio pago aceita apenas um destino. A Meta proíbe destino que muda entre acessos.');
@@ -74,15 +90,14 @@ function normalizedInput(input: RedirectLinkInput): RedirectLinkInput {
       throw new Error('Link de anúncio pago não pode usar rodízio de destinos.');
     }
   }
-  return { ...input, name, slug, destinations };
+  return { ...input, balance_mode: balanceMode, name, slug, destinations };
 }
 
-function toDestinationRows(linkId: string, destinations: RedirectDestinationInput[]) {
-  return destinations.map((destination, position) => ({
-    redirect_link_id: linkId,
+function toDestinationPayload(destinations: RedirectDestinationInput[]) {
+  return destinations.map((destination) => ({
     label: destination.label,
     target_url: destination.target_url,
-    position,
+    weight: destination.weight,
   }));
 }
 
@@ -111,10 +126,10 @@ export async function createRedirectLink(input: RedirectLinkInput): Promise<Redi
   const { destinations, ...linkInput } = clean;
   const { data: link, error: linkError } = await supabase.from('redirect_links').insert(linkInput).select().single();
   if (linkError) throw linkError;
-  const { data: destinationRows, error: destinationsError } = await supabase
-    .from('redirect_destinations')
-    .insert(toDestinationRows(link.id, destinations))
-    .select();
+  const { data: destinationRows, error: destinationsError } = await supabase.rpc('save_redirect_destinations', {
+    p_link_id: link.id,
+    p_destinations: toDestinationPayload(destinations),
+  });
   if (destinationsError) {
     await supabase.from('redirect_links').delete().eq('id', link.id);
     throw destinationsError;
@@ -135,7 +150,7 @@ export async function updateRedirectLink(
   // criado ou removido. Apagar e recriar zerava os acessos a cada edição.
   const { data: destinationRows, error: destinationsError } = await supabase.rpc('save_redirect_destinations', {
     p_link_id: linkId,
-    p_destinations: destinations.map((destination) => ({ label: destination.label, target_url: destination.target_url })),
+    p_destinations: toDestinationPayload(destinations),
   });
   if (destinationsError) throw destinationsError;
   return { ...link, destinations: destinationRows ?? [] };
