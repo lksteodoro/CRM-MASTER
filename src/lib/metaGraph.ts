@@ -183,8 +183,10 @@ async function fileToBase64(file: File | Blob): Promise<string> {
 }
 
 /** Sobe uma imagem de anúncio e devolve o hash usado no criativo. */
-export async function metaUploadImage(adAccountId: string, file: File | Blob): Promise<string> {
-  const payload = await invoke<any>({ op: 'upload_image', adAccountId, bytes: await fileToBase64(file) });
+export async function metaUploadImage(adAccountId: string, file: File | Blob, fileName?: string): Promise<string> {
+  // Sem o nome, a biblioteca de mídia da Meta lista toda imagem como "bytes".
+  const name = fileName || (file instanceof File ? file.name : undefined);
+  const payload = await invoke<any>({ op: 'upload_image', adAccountId, bytes: await fileToBase64(file), ...(name ? { fileName: name } : {}) });
   if (payload?.error) throwGraphError(payload.error, 'Imagem:');
   const image = Object.values(payload?.images ?? {})[0] as { hash?: string } | undefined;
   if (!image?.hash) throw new MetaApiError('O upload da imagem não retornou hash.');

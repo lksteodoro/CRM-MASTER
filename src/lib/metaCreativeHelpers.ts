@@ -34,6 +34,40 @@ export function aspectLabel(width?: number | null, height?: number | null): stri
   return match ? match[1] : `${width}×${height}`;
 }
 
+// ─── Destino do conjunto ────────────────────────────────────────────────────
+
+const KNOWN_DESTINATION_TYPES = ['WEBSITE', 'WHATSAPP', 'MESSENGER', 'INSTAGRAM_DIRECT', 'ON_AD', 'APP', 'FACEBOOK'];
+const WEBSITE_GOALS = ['OFFSITE_CONVERSIONS', 'LINK_CLICKS', 'LANDING_PAGE_VIEWS', 'VALUE'];
+const MESSAGING_GOALS = ['CONVERSATIONS', 'REPLIES', 'MESSAGING_PURCHASE_CONVERSION', 'MESSAGING_APPOINTMENT_CONVERSION'];
+
+export type AdSetDestination = { destType: string; isMultiDest: boolean };
+
+/**
+ * Destino efetivo de um conjunto. A Meta passou a devolver destination_type
+ * "UNDEFINED" também para conjuntos de conversão no site (pixel), não só para
+ * os de mensagens com vários destinos — por isso o objetivo de otimização
+ * decide quando o tipo não vem declarado.
+ */
+export function classifyAdSetDestination(destinationType?: string | null, optimizationGoal?: string | null): AdSetDestination {
+  if (destinationType && KNOWN_DESTINATION_TYPES.includes(destinationType)) return { destType: destinationType, isMultiDest: false };
+  if (optimizationGoal && WEBSITE_GOALS.includes(optimizationGoal)) return { destType: 'WEBSITE', isMultiDest: false };
+  if (optimizationGoal && MESSAGING_GOALS.includes(optimizationGoal)) return { destType: 'WHATSAPP', isMultiDest: true };
+  return { destType: 'WEBSITE', isMultiDest: true };
+}
+
+/** Nome de arquivo seguro para a biblioteca de mídia da Meta. */
+export function mediaLibraryName(name: string, fallback = 'imagem'): string {
+  const cleaned = name
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/_\./g, '.')
+    .replace(/^[_.]+|[_.]+$/g, '')
+    .slice(0, 100);
+  return cleaned || fallback;
+}
+
 // ─── Pareamento Feed ↔ Stories ──────────────────────────────────────────────
 
 export type PairableMedia = { id: string; name: string; type: 'IMAGE' | 'VIDEO'; placement: PlacementFormat };

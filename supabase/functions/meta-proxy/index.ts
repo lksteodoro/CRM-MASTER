@@ -229,6 +229,17 @@ Deno.serve(async (request) => {
       if (!/^act_\d+$/.test(account)) return json({ error: 'invalid_ad_account' }, 400);
       const bytes = String(body.bytes ?? '');
       if (!bytes || bytes.length > 14_000_000) return json({ error: 'invalid_image' }, 400);
+      // Com nome de arquivo, a imagem aparece na biblioteca da Meta com esse
+      // nome; mandando só `bytes`, todas ficam listadas como "bytes".
+      const fileName = String(body.fileName ?? '').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 100);
+      if (fileName) {
+        const binary = Uint8Array.from(atob(bytes), (char) => char.charCodeAt(0));
+        const form = new FormData();
+        for (const [key, value] of auth().entries()) form.set(key, value);
+        form.set('filename', new Blob([binary]), fileName);
+        const response = await fetch(`${GRAPH}/${account}/adimages`, { method: 'POST', body: form });
+        return json(await noteAuthFailure(await response.json()));
+      }
       const params = auth();
       params.set('bytes', bytes);
       const response = await fetch(`${GRAPH}/${account}/adimages`, { method: 'POST', body: params });

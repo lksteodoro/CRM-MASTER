@@ -26,7 +26,9 @@ import {
   aspectLabel,
   autoPairMedia,
   buildPlacementAssetFeedSpec,
+  classifyAdSetDestination,
   detectPlacementFormat,
+  mediaLibraryName,
   pickInheritedCopy,
 } from '../lib/metaCreativeHelpers';
 // O módulo foi importado do CRM VENZA. Clientes e credenciais serão ligados
@@ -1069,7 +1071,7 @@ ${rows.map(r => `<tr>
       },
     };
     Promise.all(campIds.map(campId =>
-      metaGet(`${campId}/adsets`, { fields: 'id,name,status,destination_type', limit: 100 }, rateNotice)
+      metaGet(`${campId}/adsets`, { fields: 'id,name,status,destination_type,optimization_goal', limit: 100 }, rateNotice)
         .then(json => {
           if (json?.error) throw new Error(`Erro ${json.error.code}: ${json.error.message}`);
           const campaignName = apiData.campaigns.find(c => c.id === campId)?.name || campId;
@@ -1548,7 +1550,7 @@ ${rows.map(r => `<tr>
 
     // ── Upload de IMAGEM ─────────────────────────────────────────────────────
     const uploadImage = async (file) => {
-      const hash = await metaUploadImage(adAccountId, file);
+      const hash = await metaUploadImage(adAccountId, file, mediaLibraryName(file.name));
       return { type: 'IMAGE', hash };
     };
 
@@ -1586,6 +1588,7 @@ ${rows.map(r => `<tr>
 
     // ── Thumbnail (captura frame 0.5s do vídeo) ──────────────────────────────
     const captureThumbnail = (file) => new Promise((resolve) => {
+      const thumbName = mediaLibraryName(`${file.name.replace(/\.[^.]+$/, '')}_capa.jpg`);
       const video = document.createElement('video');
       video.muted = true;
       video.preload = 'auto';
@@ -1601,7 +1604,7 @@ ${rows.map(r => `<tr>
           URL.revokeObjectURL(url);
           canvas.toBlob(async (blob) => {
             try {
-              resolve(await metaUploadImage(adAccountId, blob));
+              resolve(await metaUploadImage(adAccountId, blob, thumbName));
             } catch { resolve(null); }
           }, 'image/jpeg', 0.85);
         } catch { URL.revokeObjectURL(url); resolve(null); }
@@ -1813,19 +1816,18 @@ ${rows.map(r => `<tr>
       // ── Destino de cada conjunto ─────────────────────────────────────────────
       // Com várias campanhas, cada conjunto pode ter destino próprio. O destino
       // define CTA, link e formato do criativo, então é resolvido um a um.
-      const KNOWN_DEST_TYPES = ['WEBSITE', 'WHATSAPP', 'MESSENGER', 'INSTAGRAM_DIRECT', 'ON_AD', 'APP', 'FACEBOOK'];
       const usingExistingTargets = campAction === 'existing' && adSetAction === 'existing' && allAdSetIds.length > 0;
       const resolveAdSetDestination = async (adSetId) => {
         if (!usingExistingTargets) return { destType: 'WEBSITE', promotedObject: null, isMultiDest: false };
         const cached = existingAdSets.find(a => a.id === adSetId);
         const info = await metaGet(adSetId, { fields: 'destination_type,promoted_object,optimization_goal' }, rateLimitNotice).catch(() => ({}));
-        const declared = info.destination_type || cached?.destination_type;
-        if (declared && KNOWN_DEST_TYPES.includes(declared)) {
-          return { destType: declared, promotedObject: info.promoted_object || null, isMultiDest: false };
-        }
-        // destination_type indefinido → conjunto multi-destino
-        const destType = info.optimization_goal === 'CONVERSATIONS' ? 'WHATSAPP' : 'WEBSITE';
-        return { destType, promotedObject: info.promoted_object || null, isMultiDest: true };
+        // "UNDEFINED" com conversão no site é conjunto de site comum; só os de
+        // mensagens sem destino declarado são multi-destino.
+        const { destType, isMultiDest } = classifyAdSetDestination(
+          info.destination_type || cached?.destination_type,
+          info.optimization_goal || cached?.optimization_goal,
+        );
+        return { destType, promotedObject: info.promoted_object || null, isMultiDest };
       };
 
       const targets = [];
@@ -1990,7 +1992,7 @@ ${rows.map(r => `<tr>
         }),
       }));
       for (const name of storyWarnings) {
-        pushLog(`⚠️ "${name}": Feed + Stories só funciona com destino site — publicada só a versão de feed.`, 'success');
+        pushLog(`⚠️ "${name}": Feed + Stories precisa de destino site com URL (este conjunto é de mensagens, formulário ou multi-destino) — publicada só a versão de feed.`, 'error');
       }
       if (inheritActive) {
         const inheritedCount = targets.filter(t => inheritanceFor(t.adSetId)?.data).length;
@@ -3294,6 +3296,11 @@ ${rows.map(r => `<tr>
                   const activeMedia = adUnits[activeIdx] ?? null;
                   const unitIndexById = Object.fromEntries(adUnits.map((m, i) => [m.id, i]));
                   const feedOfStory = Object.fromEntries(Object.entries(storyPairs).map(([feedId, storyId]) => [storyId, feedId]));
+                  const blockedAdSets = usingExistingAdSet
+                    ? selectedAdSetIds
+                        .map(id => existingAdSets.find(a => a.id === id))
+                        .filter(a => a && classifyAdSetDestination(a.destination_type, a.optimization_goal).isMultiDest)
+                    : [];
                   const placementsSupported = !isAutoMsgDest && !isLeadFormDest;
                   const formatBadge = (m) => {
                     const isStory = m.placement === 'story';
@@ -3462,6 +3469,11 @@ ${rows.map(r => `<tr>
                       <div style={{ fontSize: '11px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
                         Envie a versão de <strong style={{ color: '#34d399' }}>Feed</strong> (1:1 ou 4:5) e a de <strong style={{ color: '#c4b5fd' }}>Stories/Reels</strong> (9:16) do mesmo criativo: o sistema junta as duas no mesmo anúncio e a Meta mostra cada uma no lugar certo. O pareamento é automático pelo nome do arquivo — confira abaixo.
                       </div>
+                      {placementsSupported && blockedAdSets.length > 0 && pairedStoryIds.size > 0 && (
+                        <div style={{ fontSize: '11px', color: '#f59e0b', padding: '8px 10px', borderRadius: '8px', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)' }}>
+                          Nestes conjuntos o Stories não entra (destino de mensagens/multi-destino): {blockedAdSets.map(a => a.name).join(', ')}. Neles vai só a versão de feed.
+                        </div>
+                      )}
                       {!placementsSupported && pairedStoryIds.size > 0 && (
                         <div style={{ fontSize: '11px', color: '#f59e0b', padding: '8px 10px', borderRadius: '8px', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)' }}>
                           Feed + Stories só funciona com destino site. Neste destino (mensagens/formulário) vai só a versão de feed.

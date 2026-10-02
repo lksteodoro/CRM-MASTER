@@ -4,11 +4,26 @@ import {
   aspectLabel,
   autoPairMedia,
   buildPlacementAssetFeedSpec,
+  classifyAdSetDestination,
   detectPlacementFormat,
+  mediaLibraryName,
   extractAdCopy,
   normalizeMediaName,
   pickInheritedCopy,
 } from '../src/lib/metaCreativeHelpers.ts';
+
+test('UNDEFINED com conversão no site é destino site, não multi-destino', () => {
+  assert.deepEqual(classifyAdSetDestination('UNDEFINED', 'OFFSITE_CONVERSIONS'), { destType: 'WEBSITE', isMultiDest: false });
+  assert.deepEqual(classifyAdSetDestination('WEBSITE', 'LINK_CLICKS'), { destType: 'WEBSITE', isMultiDest: false });
+  assert.deepEqual(classifyAdSetDestination('UNDEFINED', 'CONVERSATIONS'), { destType: 'WHATSAPP', isMultiDest: true });
+  assert.deepEqual(classifyAdSetDestination('WHATSAPP', 'CONVERSATIONS'), { destType: 'WHATSAPP', isMultiDest: false });
+  assert.deepEqual(classifyAdSetDestination(undefined, undefined), { destType: 'WEBSITE', isMultiDest: true });
+});
+
+test('nome seguro para a biblioteca de mídia', () => {
+  assert.equal(mediaLibraryName('Pós Graduação Feed (1).png'), 'Pos_Graduacao_Feed_1.png');
+  assert.equal(mediaLibraryName('***'), 'imagem');
+});
 
 test('detecta Stories pela proporção', () => {
   assert.equal(detectPlacementFormat(1080, 1920), 'story');
