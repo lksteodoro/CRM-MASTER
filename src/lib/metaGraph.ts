@@ -9,7 +9,6 @@ import { supabase } from '../integrations/supabase/client';
  * anúncios não pode existir no navegador.
  */
 
-const MEDIA_BUCKET = 'meta-ad-media';
 
 /** Códigos de limite de requisição da Meta. Merecem espera, não falha. */
 const RATE_LIMIT_CODES = new Set([4, 17, 32, 80004]);
@@ -35,6 +34,14 @@ export class MetaNotConnectedError extends Error {
   }
 }
 
+/** A Edge Function publicada ainda não conhece a operação pedida (deploy pendente). */
+export class MetaProxyOutdatedError extends Error {
+  constructor(op: string) {
+    super(`A função meta-proxy publicada ainda não tem a operação "${op}".`);
+    this.name = 'MetaProxyOutdatedError';
+  }
+}
+
 type GraphError = { message?: string; code?: number; error_subcode?: number; error_user_msg?: string };
 
 function throwGraphError(error: GraphError, prefix?: string): never {
@@ -49,7 +56,7 @@ function throwGraphError(error: GraphError, prefix?: string): never {
 
 type InvokeOptions = { retries?: number; onRateLimit?: (seconds: number, code: number) => void };
 
-async function invoke<T = any>(payload: Record<string, unknown>, options: InvokeOptions = {}): Promise<T> {
+async function invoke<T = any>(payload: Record<string, unknown> | FormData, options: InvokeOptions = {}): Promise<T> {
   const retries = options.retries ?? 4;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -73,6 +80,9 @@ async function invoke<T = any>(payload: Record<string, unknown>, options: Invoke
       }
       if (detail?.error === 'forbidden') {
         throw new MetaApiError('Seu usuário não tem a ferramenta Meta Ads liberada.');
+      }
+      if (detail?.error === 'invalid_op') {
+        throw new MetaProxyOutdatedError(String(detail.op ?? ''));
       }
       throw new MetaApiError(detail?.message || error.message || 'Falha ao falar com a Meta.');
     }
@@ -181,44 +191,125 @@ export async function metaUploadImage(adAccountId: string, file: File | Blob): P
   return image.hash;
 }
 
-/**
- * Sobe um vídeo de anúncio.
- *
- * O arquivo vai primeiro para um bucket privado do projeto; a Edge Function
- * emite uma URL assinada de uma hora e manda a Meta buscar o arquivo de lá.
- * Isso substitui o envio em partes feito antes pelo navegador — que só
- * funcionava com o token exposto no cliente.
- */
-export async function metaUploadVideo(
-  adAccountId: string,
-  file: File,
-  onStage?: (stage: 'uploading' | 'sending' | 'done') => void,
-): Promise<string> {
+/** Maior pedaço mandado de uma vez à Edge Function. */
+const MAX_VIDEO_CHUNK_BYTES = 16 * 1024 * 1024;
+
+const MEDIA_BUCKET = 'meta-ad-media';
+const STORAGE_FREE_PLAN_LIMIT = 50 * 1024 * 1024;
+
+/** Caminho antigo: Storage + URL assinada. Só para quando o servidor não foi atualizado. */
+async function legacyUploadViaStorage(adAccountId: string, file: File, onProgress?: (fraction: number) => void): Promise<string> {
+  if (file.size > STORAGE_FREE_PLAN_LIMIT) {
+    throw new MetaApiError(
+      `Vídeo de ${(file.size / 1024 / 1024).toFixed(0)} MB: o envio em partes ainda não foi ativado no servidor (função meta-proxy), e sem ele o limite é 50 MB.`,
+    );
+  }
   const { data: userData } = await supabase.auth.getUser();
   const userId = userData.user?.id;
   if (!userId) throw new MetaApiError('Sessão expirada. Entre novamente para publicar.');
 
   const extension = (file.name.split('.').pop() || 'mp4').toLowerCase().replace(/[^a-z0-9]/g, '') || 'mp4';
   const storagePath = `${userId}/${crypto.randomUUID()}.${extension}`;
-
-  onStage?.('uploading');
   const { error: uploadError } = await supabase.storage
     .from(MEDIA_BUCKET)
     .upload(storagePath, file, { contentType: file.type || 'video/mp4', upsert: false });
   if (uploadError) throw new MetaApiError(`Não foi possível preparar o vídeo: ${uploadError.message}`);
-
+  onProgress?.(0.5);
   try {
-    onStage?.('sending');
     const payload = await invoke<any>({ op: 'upload_video', adAccountId, storagePath, name: file.name });
     if (payload?.error) throwGraphError(payload.error, 'Vídeo:');
     if (!payload?.id) throw new MetaApiError('O upload do vídeo não retornou id.');
-    onStage?.('done');
+    onProgress?.(1);
     return payload.id as string;
   } finally {
-    // O arquivo só precisa existir enquanto a Meta o baixa. Guardá-lo depois
-    // seria acumular mídia de cliente sem motivo.
     void invoke({ op: 'discard_upload', storagePath }).catch(() => undefined);
   }
+}
+
+/**
+ * Sobe um vídeo de anúncio em partes (upload resumable da Meta).
+ *
+ * Cada pedaço vai do navegador para a Edge Function `meta-proxy`, que o
+ * repassa à Meta com a credencial do servidor. Antes o vídeo passava pelo
+ * Storage do Supabase, que no plano gratuito recusa todo arquivo acima de
+ * 50 MB ("The object exceeded the maximum allowed size").
+ *
+ * `onProgress` recebe a fração enviada (0–1).
+ */
+export async function metaUploadVideo(
+  adAccountId: string,
+  file: File,
+  onProgress?: (fraction: number) => void,
+): Promise<string> {
+  let start: any;
+  try {
+    start = await invoke<any>({ op: 'video_start', adAccountId, fileSize: file.size });
+  } catch (caught) {
+    // Servidor ainda na versão antiga: usa o caminho anterior (Storage), que
+    // funciona até o limite de 50 MB do plano gratuito do Supabase.
+    if (caught instanceof MetaProxyOutdatedError) return legacyUploadViaStorage(adAccountId, file, onProgress);
+    throw caught;
+  }
+  if (start?.error) throwGraphError(start.error, 'Vídeo (início):');
+  const uploadSessionId = String(start?.upload_session_id ?? '');
+  if (!uploadSessionId) throw new MetaApiError('A Meta não abriu a sessão de upload do vídeo.');
+
+  let startOffset = Number(start.start_offset);
+  let endOffset = Number(start.end_offset);
+  let part = 0;
+
+  // A Meta decide onde começa e termina cada parte; o loop segue os offsets
+  // que ela devolve até start == end.
+  while (startOffset < file.size && startOffset !== endOffset) {
+    if (!Number.isFinite(startOffset) || !Number.isFinite(endOffset) || endOffset <= startOffset || endOffset > file.size) {
+      throw new MetaApiError(`A Meta devolveu offsets inválidos no upload do vídeo (${startOffset}–${endOffset}).`);
+    }
+    part += 1;
+    if (part > 5000) throw new MetaApiError('Upload do vídeo excedeu o limite de partes.');
+
+    const cappedEnd = Math.min(endOffset, startOffset + MAX_VIDEO_CHUNK_BYTES);
+    let useFullRange = false;
+    let result: any = null;
+    let lastError: unknown = null;
+    // Pedaço que falhou é reenviado; a Meta aceita o mesmo offset de novo. Se a
+    // parte limitada a 16 MB for recusada, tenta o intervalo inteiro pedido.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const sliceEnd = useFullRange ? endOffset : cappedEnd;
+      try {
+        const form = new FormData();
+        form.set('op', 'video_chunk');
+        form.set('adAccountId', adAccountId);
+        form.set('uploadSessionId', uploadSessionId);
+        form.set('startOffset', String(startOffset));
+        form.set('fileName', file.name);
+        form.set('chunk', file.slice(startOffset, sliceEnd), file.name);
+        result = await invoke<any>(form);
+        if (result?.error) throwGraphError(result.error, `Vídeo (parte ${part}):`);
+        lastError = null;
+        break;
+      } catch (caught) {
+        lastError = caught;
+        if (cappedEnd < endOffset) useFullRange = true;
+        await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+      }
+    }
+    if (lastError) throw lastError;
+
+    startOffset = Number(result.start_offset);
+    endOffset = Number(result.end_offset);
+    onProgress?.(Math.min(1, startOffset / file.size));
+  }
+
+  if (startOffset < file.size) {
+    throw new MetaApiError(`Upload do vídeo interrompido em ${startOffset} de ${file.size} bytes.`);
+  }
+
+  const finish = await invoke<any>({ op: 'video_finish', adAccountId, uploadSessionId, title: file.name });
+  if (finish?.error) throwGraphError(finish.error, 'Vídeo (finalização):');
+  const videoId = String(finish?.video_id ?? start.video_id ?? '');
+  if (!videoId) throw new MetaApiError('O upload do vídeo não retornou id.');
+  onProgress?.(1);
+  return videoId;
 }
 
 /** Espera a Meta terminar de processar o vídeo antes de criar o criativo. */

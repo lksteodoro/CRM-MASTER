@@ -75,9 +75,21 @@ Deno.serve(async (request) => {
   const authHeader = request.headers.get('Authorization');
   if (!authHeader) return json({ error: 'missing_authorization' }, 401);
 
+  // JSON para tudo, exceto as partes do vídeo, que chegam como multipart
+  // (bytes crus, sem o inchaço de 33% do base64).
   let body: Record<string, unknown>;
+  let videoChunk: Blob | null = null;
   try {
-    body = await request.json();
+    if ((request.headers.get('content-type') ?? '').includes('multipart/form-data')) {
+      const form = await request.formData();
+      body = {};
+      for (const [key, value] of form.entries()) {
+        if (key === 'chunk' && value instanceof Blob) videoChunk = value;
+        else body[key] = value;
+      }
+    } else {
+      body = await request.json();
+    }
   } catch {
     return json({ error: 'invalid_json' }, 400);
   }
@@ -242,6 +254,43 @@ Deno.serve(async (request) => {
       params.set('file_url', signed.signedUrl);
       if (body.name) params.set('name', String(body.name));
       const response = await fetch(`${GRAPH}/${account}/advideos`, { method: 'POST', body: params });
+      return json(await noteAuthFailure(await response.json()));
+    }
+
+    // ── Upload de vídeo em partes (resumable) ───────────────────────────────
+    // O navegador manda o arquivo pedaço a pedaço e a função repassa cada
+    // pedaço à Meta. Não usa o Storage: no plano gratuito do Supabase todo
+    // objeto acima de 50 MB é recusado, o que barrava vídeo grande.
+    // Fases: video_start → video_chunk (repetido) → video_finish.
+    if (op === 'video_start' || op === 'video_chunk' || op === 'video_finish') {
+      const account = String(body.adAccountId ?? '');
+      if (!/^act_\d+$/.test(account)) return json({ error: 'invalid_ad_account' }, 400);
+      const form = new FormData();
+      for (const [key, value] of auth().entries()) form.set(key, value);
+
+      if (op === 'video_start') {
+        const fileSize = Number(body.fileSize);
+        if (!Number.isFinite(fileSize) || fileSize <= 0 || fileSize > 4 * 1024 ** 3) {
+          return json({ error: 'invalid_file_size' }, 400);
+        }
+        form.set('upload_phase', 'start');
+        form.set('file_size', String(Math.trunc(fileSize)));
+      } else if (op === 'video_chunk') {
+        if (!videoChunk) return json({ error: 'missing_chunk' }, 400);
+        form.set('upload_phase', 'transfer');
+        form.set('upload_session_id', String(body.uploadSessionId ?? ''));
+        form.set('start_offset', String(body.startOffset ?? ''));
+        form.set('video_file_chunk', videoChunk, String(body.fileName ?? 'video.mp4'));
+      } else {
+        form.set('upload_phase', 'finish');
+        form.set('upload_session_id', String(body.uploadSessionId ?? ''));
+        if (body.title) form.set('title', String(body.title).slice(0, 255));
+      }
+
+      const response = await fetch(`https://graph-video.facebook.com/${GRAPH_VERSION}/${account}/advideos`, {
+        method: 'POST',
+        body: form,
+      });
       return json(await noteAuthFailure(await response.json()));
     }
 

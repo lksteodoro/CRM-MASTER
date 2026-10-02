@@ -22,6 +22,13 @@ import {
   validateDestinationUrl,
 } from '../lib/metaCompliance';
 import { META_UTM_TEMPLATE } from '../lib/utmBuilder';
+import {
+  aspectLabel,
+  autoPairMedia,
+  buildPlacementAssetFeedSpec,
+  detectPlacementFormat,
+  pickInheritedCopy,
+} from '../lib/metaCreativeHelpers';
 // O módulo foi importado do CRM VENZA. Clientes e credenciais serão ligados
 // aos dados reais deste CRM na próxima etapa de integração.
 const CLIENTS = [];
@@ -34,6 +41,65 @@ const normalizeAdAccountId = (value) => {
   return digits ? `act_${digits}` : '';
 };
 const MAX_BROWSER_TRANSCODE_BYTES = 750 * 1024 * 1024;
+
+/** Largura e altura reais da mídia (para saber se é Feed ou Stories 9:16). */
+const readMediaDimensions = (file, type) => new Promise((resolve) => {
+  const url = URL.createObjectURL(file);
+  let settled = false;
+  const finish = (width, height) => {
+    if (settled) return;
+    settled = true;
+    URL.revokeObjectURL(url);
+    resolve({ width: width || 0, height: height || 0 });
+  };
+  setTimeout(() => finish(0, 0), 10000);
+  if (type === 'VIDEO') {
+    const video = document.createElement('video');
+    video.preload = 'metadata';
+    video.muted = true;
+    video.onloadedmetadata = () => finish(video.videoWidth, video.videoHeight);
+    video.onerror = () => finish(0, 0);
+    video.src = url;
+  } else {
+    const img = new Image();
+    img.onload = () => finish(img.naturalWidth, img.naturalHeight);
+    img.onerror = () => finish(0, 0);
+    img.src = url;
+  }
+});
+
+// Lista de campanhas com busca e seleção múltipla (aba Campanha → Usar existente).
+const CampaignMultiSelect = ({ campaigns, selectedIds, onChange }) => {
+  const [query, setQuery] = useState('');
+  const term = query.trim().toLowerCase();
+  const visible = campaigns.filter(c => !term || (c.name || '').toLowerCase().includes(term) || String(c.id).includes(term));
+  const toggle = (id) => onChange(selectedIds.includes(id) ? selectedIds.filter(x => x !== id) : [...selectedIds, id]);
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap' }}>
+        <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Busque pelo nome da campanha..." style={{ flex: 1, minWidth: '200px', padding: '9px 12px', borderRadius: '8px', border: '1px solid var(--border-main)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '13px', outline: 'none' }} />
+        <button type="button" onClick={() => onChange([...new Set([...selectedIds, ...visible.map(c => c.id)])])} style={{ fontSize: '11px', padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border-main)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}>Selecionar visíveis</button>
+        <button type="button" onClick={() => onChange([])} style={{ fontSize: '11px', padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border-main)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}>Limpar</button>
+        {selectedIds.length > 0 && <span style={{ fontSize: '11px', fontWeight: '700', background: 'rgba(139,92,246,0.12)', color: 'var(--primary)', padding: '2px 8px', borderRadius: '10px' }}>{selectedIds.length} campanha(s)</span>}
+      </div>
+      <div style={{ maxHeight: '190px', overflowY: 'auto', border: '1px solid var(--border-light)', borderRadius: '8px', background: 'var(--bg-surface)' }}>
+        {visible.length === 0 && <div style={{ padding: '12px', fontSize: '12px', color: 'var(--text-muted)' }}>Nenhuma campanha encontrada.</div>}
+        {visible.map(c => {
+          const checked = selectedIds.includes(c.id);
+          return (
+            <label key={c.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 12px', cursor: 'pointer', borderBottom: '1px solid var(--border-light)', background: checked ? 'rgba(16,185,129,0.06)' : 'transparent' }}>
+              <input type="checkbox" checked={checked} onChange={() => toggle(c.id)} style={{ flexShrink: 0, accentColor: 'var(--primary)' }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: '13px', fontWeight: '700', color: checked ? 'var(--primary)' : 'var(--text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.name}</div>
+                <div style={{ fontSize: '10px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>ID: {c.id}{c.objective ? ` · ${OBJECTIVE_LABEL(c.objective)}` : ''}</div>
+              </div>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
 const MOCK_BM_DATA = {
   bms: [
     { id: 'bm_001', name: 'Venza Assessoria — Principal' },
@@ -323,6 +389,7 @@ const MetaAdCreator = ({ card, onClose, onComplete, projectId, quickPreset = nul
       setCampAction(saved.campAction || 'new');
       setCampData(saved.campData || {});
       setAdSetAction(saved.adSetAction || 'new');
+      setSelectedCampaignIds(saved.selectedCampaignIds || (saved.campData?.existingId ? [saved.campData.existingId] : []));
       setSelectedAdSetIds(saved.selectedAdSetIds || []);
       setAdSetData(saved.adSetData || {});
       setAdsData(saved.adsData || {});
@@ -349,6 +416,7 @@ const MetaAdCreator = ({ card, onClose, onComplete, projectId, quickPreset = nul
     // O histórico guarda metadados e preview, não o binário original. Forçar
     // novo upload é necessário para a Meta gerar um novo video_id processado.
     setMediaFiles([]);
+    setStoryPairs({});
     setActiveCopyFileId(null);
     setActiveTab(3);
     setError(reprocess
@@ -916,7 +984,7 @@ ${rows.map(r => `<tr>
           setApiData({ campaigns: camps, pages: pgs, igs: igs, pixels: pixs });
         } else {
           const [campsRes, pgsRes, pixsRes] = await Promise.all([
-            metaGet(`${adAccountId}/campaigns`, { fields: 'id,name,status', limit: 100 }),
+            metaGet(`${adAccountId}/campaigns`, { fields: 'id,name,status,objective', limit: 100 }),
             metaGet('me/accounts', { fields: 'id,name,instagram_business_account{id,username}', limit: 50 }).catch(() => ({ data: [] })),
             metaGet(`${adAccountId}/adspixels`, { fields: 'id,name', limit: 25 }).catch(() => ({ data: [] })),
           ]);
@@ -930,7 +998,7 @@ ${rows.map(r => `<tr>
             .filter(c => !DELETED_STATUSES.includes(c.status))
             .map(c => {
               const isPaused = c.status === 2 || c.status === 'PAUSED';
-              return { id: c.id, name: isPaused ? `${c.name} (Pausada)` : c.name };
+              return { id: c.id, name: isPaused ? `${c.name} (Pausada)` : c.name, objective: c.objective };
             });
           setApiData({
             campaigns: allCampaigns,
@@ -969,6 +1037,14 @@ ${rows.map(r => `<tr>
   const [selectedAdSetIds, setSelectedAdSetIds] = useState([]);       // multi-select
   const [campaignObjective, setCampaignObjective] = useState(null);   // objetivo da campanha existente
   const [loadingObjective, setLoadingObjective] = useState(false);
+  // Campanhas existentes selecionadas. campData.existingId acompanha a primeira
+  // (usada para objetivo e para criar conjunto novo, que só vale com uma).
+  const [selectedCampaignIds, setSelectedCampaignIds] = useState([]);
+  const changeCampaignSelection = (ids) => {
+    setSelectedCampaignIds(ids);
+    setCampData(current => ({ ...current, existingId: ids[0] || '' }));
+    if (ids.length > 1) setAdSetAction('existing');
+  };
 
   const toggleAdSet = (id) => setSelectedAdSetIds(prev =>
     prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
@@ -976,38 +1052,41 @@ ${rows.map(r => `<tr>
 
   const [adSetFetchError, setAdSetFetchError] = useState(null);
   const [adSetRetryKey, setAdSetRetryKey] = useState(0);
+  const selectedCampaignKey = selectedCampaignIds.join(',');
 
   useEffect(() => {
-    const campId = campAction === 'existing' ? campData.existingId : null;
-    if (!campId) { setExistingAdSets([]); setAdSetFetchError(null); return; }
+    const campIds = campAction === 'existing' ? selectedCampaignIds : [];
+    if (!campIds.length) { setExistingAdSets([]); setAdSetFetchError(null); return; }
     if (!connection.connected) return;
     setLoadingAdSets(true);
-    setSelectedAdSetIds([]);
     setAdSetFetchError(null);
 
     // A espera por limite de requisição é tratada dentro do cliente da Graph;
     // aqui só refletimos isso na tela.
-    metaGet(
-      `${campId}/adsets`,
-      { fields: 'id,name,status,destination_type', limit: 100 },
-      {
-        onRateLimit: (seconds) => {
-          setAdSetFetchError(`⏳ Limite de requisições da Meta — aguardando ${seconds}s...`);
-        },
+    const rateNotice = {
+      onRateLimit: (seconds) => {
+        setAdSetFetchError(`⏳ Limite de requisições da Meta — aguardando ${seconds}s...`);
       },
-    )
-      .then(json => {
-        if (json?.error) {
-          setAdSetFetchError(`Erro ${json.error.code}: ${json.error.message}`);
-          setExistingAdSets([]);
-        } else {
-          const filtered = (json.data || []).filter(a => a.status !== 'DELETED' && a.status !== 'ARCHIVED');
-          setExistingAdSets(filtered);
-        }
+    };
+    Promise.all(campIds.map(campId =>
+      metaGet(`${campId}/adsets`, { fields: 'id,name,status,destination_type', limit: 100 }, rateNotice)
+        .then(json => {
+          if (json?.error) throw new Error(`Erro ${json.error.code}: ${json.error.message}`);
+          const campaignName = apiData.campaigns.find(c => c.id === campId)?.name || campId;
+          return (json.data || [])
+            .filter(a => a.status !== 'DELETED' && a.status !== 'ARCHIVED')
+            .map(a => ({ ...a, campaign_id: campId, campaignName }));
+        })
+    ))
+      .then(groups => {
+        const loaded = groups.flat();
+        setExistingAdSets(loaded);
+        const loadedIds = new Set(loaded.map(a => a.id));
+        setSelectedAdSetIds(prev => prev.filter(id => loadedIds.has(id)));
       })
-      .catch(err => { setAdSetFetchError(`Falha: ${err.message}`); setExistingAdSets([]); })
+      .catch(err => { setAdSetFetchError(err.message?.startsWith('Erro') ? err.message : `Falha: ${err.message}`); setExistingAdSets([]); })
       .finally(() => setLoadingAdSets(false));
-  }, [campData.existingId, campAction, adSetRetryKey, connection.connected]);
+  }, [selectedCampaignKey, campAction, adSetRetryKey, connection.connected]);
 
   // ─── Fetch objetivo da campanha existente ─────────────────────────────────────
   useEffect(() => {
@@ -1077,8 +1156,69 @@ ${rows.map(r => `<tr>
   const [individualCopyMode, setIndividualCopyMode] = useState(false);
   const [adCopyOverrides, setAdCopyOverrides] = useState({});   // { [fileId]: { primaryText?, title?, ... } }
   const [activeCopyFileId, setActiveCopyFileId] = useState(null);
+  // Feed + Stories: { [idDaMídiaFeed]: idDaMídiaStories }. A versão 9:16 não vira
+  // anúncio próprio — entra no mesmo anúncio, nos posicionamentos verticais.
+  const [storyPairs, setStoryPairs] = useState({});
+  // Herança por conjunto: copy e URL vêm dos anúncios que já rodam no conjunto.
+  const [inheritUrl, setInheritUrl] = useState(true);
+  const [inheritCopy, setInheritCopy] = useState(true);
+  const [adSetInheritance, setAdSetInheritance] = useState({}); // { [adSetId]: { status, data, error } }
 
   const usingExistingAdSet = campAction === 'existing' && adSetAction === 'existing' && selectedAdSetIds.length > 0;
+
+  // ─── Unidades de anúncio: cada mídia de feed (com a versão Stories junto) ────
+  const mediaById = Object.fromEntries(mediaFiles.map(m => [m.id, m]));
+  const pairedStoryIds = new Set(Object.values(storyPairs));
+  const adUnits = mediaFiles.filter(m => !pairedStoryIds.has(m.id));
+  const storyOf = (feedId) => (storyPairs[feedId] ? mediaById[storyPairs[feedId]] || null : null);
+  const pairStory = (feedId, storyId) => setStoryPairs(prev => {
+    const next = { ...prev };
+    delete next[feedId];
+    for (const key of Object.keys(next)) if (next[key] === storyId || key === storyId) delete next[key];
+    if (storyId) next[feedId] = storyId;
+    return next;
+  });
+
+  // ─── Herança: lê copy e URL dos anúncios de cada conjunto selecionado ────────
+  const inheritActive = usingExistingAdSet && (inheritUrl || inheritCopy);
+  const selectedAdSetKey = selectedAdSetIds.join(',');
+  useEffect(() => {
+    if (!inheritActive || !connection.connected) return;
+    const missing = selectedAdSetIds.filter(id => !adSetInheritance[id] || adSetInheritance[id].status === 'error');
+    if (!missing.length) return;
+    setAdSetInheritance(prev => {
+      const next = { ...prev };
+      missing.forEach(id => { next[id] = { status: 'loading' }; });
+      return next;
+    });
+    (async () => {
+      for (const id of missing) {
+        try {
+          const ads = await metaGetAll(
+            `${id}/ads`,
+            { fields: 'id,name,effective_status,creative{object_story_spec,asset_feed_spec,body,title,link_url,object_url,call_to_action_type,url_tags}', limit: 50 },
+            { maxPages: 4 },
+          );
+          const data = pickInheritedCopy(ads);
+          setAdSetInheritance(prev => ({ ...prev, [id]: { status: data ? 'ready' : 'empty', data } }));
+        } catch (e) {
+          setAdSetInheritance(prev => ({ ...prev, [id]: { status: 'error', error: e.message || 'Falha ao ler os anúncios do conjunto.' } }));
+        }
+      }
+    })();
+  }, [selectedAdSetKey, inheritActive, connection.connected]);
+
+  const inheritanceFor = (adSetId) => (inheritActive ? adSetInheritance[adSetId] : null);
+  const inheritanceLoading = inheritActive && connection.connected && selectedAdSetIds.some(id => !adSetInheritance[id] || adSetInheritance[id].status === 'loading');
+  const inheritanceCoversUrl = inheritActive && inheritUrl && selectedAdSetIds.every(id => adSetInheritance[id]?.status === 'ready' && adSetInheritance[id].data?.link);
+  const inheritedUrlError = inheritActive && inheritUrl
+    ? selectedAdSetIds.map(id => {
+        const data = adSetInheritance[id]?.data;
+        const problem = data?.link ? validateDestinationUrl(data.link) : null;
+        return problem ? `Conjunto "${existingAdSets.find(a => a.id === id)?.name || id}": ${problem}` : null;
+      }).find(Boolean) || null
+    : null;
+  const campaignObjectives = [...new Set(selectedCampaignIds.map(id => apiData.campaigns.find(c => c.id === id)?.objective).filter(Boolean))];
 
   // Objetivo ativo (detectado da campanha existente ou selecionado na nova)
   const activeObjective = campaignObjective || campData.objective;
@@ -1111,7 +1251,8 @@ ${rows.map(r => `<tr>
     0: !accountData.bmId ? 'Selecione uma Business Manager.' :
        !normalizeAdAccountId(accountData.adAccountId) ? 'Selecione uma Conta de Anúncios válida.' :
        !accountData.pageId ? 'Selecione uma Página do Facebook.' : null,
-    1: campAction === 'existing' && !campData.existingId ? 'Selecione uma campanha existente.' :
+    1: campAction === 'existing' && selectedCampaignIds.length === 0 ? 'Selecione pelo menos uma campanha existente.' :
+       campAction === 'existing' && campaignObjectives.length > 1 ? 'As campanhas selecionadas têm objetivos diferentes. Selecione campanhas com o mesmo objetivo.' :
        campAction === 'existing' && adSetAction === 'existing' && selectedAdSetIds.length === 0 ? 'Selecione pelo menos um conjunto de anúncios.' :
        campAction === 'new' && !campData.name.trim() ? 'Informe o nome da campanha.' :
        campAction === 'new' && !specialAdCategory ? 'Declare a categoria especial da campanha.' : null,
@@ -1120,8 +1261,10 @@ ${rows.map(r => `<tr>
     // A checagem do link cobre a proibição de destino dinâmico (cloaking): o
     // encurtador interno pode trocar de destino depois da aprovação do anúncio.
     3: mediaFiles.length === 0 ? 'Adicione pelo menos 1 mídia.' :
-       (needsUrl && !adsData.link.trim()) ? 'Informe a URL de destino.' :
-       (needsUrl ? validateDestinationUrl(adsData.link) : null) ||
+       inheritanceLoading ? 'Aguarde: lendo a copy e a URL dos anúncios de cada conjunto...' :
+       (needsUrl && !inheritanceCoversUrl && !adsData.link.trim()) ? (inheritActive ? 'Informe a URL de destino para os conjuntos que ainda não têm anúncio.' : 'Informe a URL de destino.') :
+       (needsUrl && !inheritanceCoversUrl ? validateDestinationUrl(adsData.link) : null) ||
+       (needsUrl ? inheritedUrlError : null) ||
        (needsUrl ? Object.values(adCopyOverrides).map(override => validateDestinationUrl(override?.link || '')).find(Boolean) || null : null),
   };
 
@@ -1130,9 +1273,9 @@ ${rows.map(r => `<tr>
     const draft = {
       accountData,
       campAction, campData,
-      adSetAction, selectedAdSetIds, adSetData,
+      adSetAction, selectedCampaignIds, selectedAdSetIds, adSetData,
       adsData, forceMessagesDest, leadDestType, saleConversionEvent,
-      individualCopyMode, adCopyOverrides, preserveOriginalMedia,
+      individualCopyMode, adCopyOverrides, preserveOriginalMedia, inheritUrl, inheritCopy,
       savedAt: new Date().toISOString(),
     };
     localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
@@ -1154,7 +1297,11 @@ ${rows.map(r => `<tr>
       if (d.campAction) setCampAction(d.campAction);
       if (d.campData) setCampData(d.campData);
       if (d.adSetAction) setAdSetAction(d.adSetAction);
+      if (d.selectedCampaignIds) setSelectedCampaignIds(d.selectedCampaignIds);
+      else if (d.campData?.existingId) setSelectedCampaignIds([d.campData.existingId]);
       if (d.selectedAdSetIds) setSelectedAdSetIds(d.selectedAdSetIds);
+      if (d.inheritUrl != null) setInheritUrl(d.inheritUrl);
+      if (d.inheritCopy != null) setInheritCopy(d.inheritCopy);
       if (d.adSetData) setAdSetData(d.adSetData);
       if (d.adsData) setAdsData(d.adsData);
       if (d.forceMessagesDest != null) setForceMessagesDest(d.forceMessagesDest);
@@ -1267,14 +1414,26 @@ ${rows.map(r => `<tr>
     }
     if (rejected.length) setError(rejected.join(' '));
     if (!allowed.length) return;
-    const newMedias = allowed.map((file, idx) => ({
+    const baseMedias = allowed.map((file, idx) => ({
       id: uuidv4(), file,
       preview: URL.createObjectURL(file),
       type: file.type.startsWith('video/') || ['mp4', 'mov'].includes(file.name.split('.').pop()?.toLowerCase()) ? 'VIDEO' : 'IMAGE',
       index: mediaFiles.length + idx + 1,
       thumbnailBase64: null,
     }));
+    // Proporção decide se é Feed ou Stories (9:16) e permite parear as versões.
+    const dimensions = await Promise.all(baseMedias.map(m => readMediaDimensions(m.file, m.type)));
+    const newMedias = baseMedias.map((m, idx) => ({
+      ...m,
+      width: dimensions[idx].width,
+      height: dimensions[idx].height,
+      placement: detectPlacementFormat(dimensions[idx].width, dimensions[idx].height),
+    }));
     setMediaFiles(prev => [...prev, ...newMedias]);
+    setStoryPairs(prev => autoPairMedia(
+      [...mediaFiles, ...newMedias].map(m => ({ id: m.id, name: m.file.name, type: m.type, placement: m.placement || 'feed' })),
+      prev,
+    ));
     if (!rejected.length) setError(null);
     // Captura thumbnails em paralelo logo após seleção dos arquivos
     const thumbs = await Promise.all(newMedias.map(m => mediaThumbnailBase64(m).catch(() => null)));
@@ -1285,7 +1444,15 @@ ${rows.map(r => `<tr>
     }));
   };
 
-  const removeMedia = (id) => setMediaFiles(prev => prev.filter(m => m.id !== id));
+  const removeMedia = (id) => {
+    setMediaFiles(prev => prev.filter(m => m.id !== id));
+    setStoryPairs(prev => {
+      const next = { ...prev };
+      delete next[id];
+      for (const key of Object.keys(next)) if (next[key] === id) delete next[key];
+      return next;
+    });
+  };
 
   const pushLog = (msg, status = 'loading') => setLogs(prev => [...prev, { id: Date.now() + Math.random(), msg, status }]);
   const updateLastLog = (status) => setLogs(prev => { const c = [...prev]; if (c.length) c[c.length - 1].status = status; return c; });
@@ -1386,18 +1553,18 @@ ${rows.map(r => `<tr>
     };
 
     // ── Upload de VÍDEO ──────────────────────────────────────────────────────
-    // O arquivo vai para o bucket privado do projeto e a Meta o baixa por URL
-    // assinada, emitida pela Edge Function. Isso substitui o envio em partes
-    // feito antes pelo navegador, que só funcionava com o token exposto aqui.
+    // Enviado em partes direto para a Meta pela Edge Function (o token fica no
+    // servidor). Sem passar pelo Storage, que no plano gratuito recusa >50 MB.
     const uploadVideo = async (file, logPrefix) => {
       const uploadLogId = `video-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      setLogs(prev => [...prev, { id: uploadLogId, msg: `${logPrefix} Preparando o vídeo...`, status: 'loading' }]);
+      const sizeMb = (file.size / 1024 / 1024).toFixed(1);
+      setLogs(prev => [...prev, { id: uploadLogId, msg: `${logPrefix} Enviando o vídeo (${sizeMb} MB)...`, status: 'loading' }]);
 
       let videoId;
       try {
-        videoId = await metaUploadVideo(adAccountId, file, (stage) => {
-          if (stage === 'uploading') setLogs(prev => prev.map(l => l.id === uploadLogId ? { ...l, msg: `${logPrefix} Enviando o vídeo...` } : l));
-          if (stage === 'sending') setLogs(prev => prev.map(l => l.id === uploadLogId ? { ...l, msg: `${logPrefix} Entregando o vídeo à Meta...` } : l));
+        videoId = await metaUploadVideo(adAccountId, file, (fraction) => {
+          const pct = Math.round(fraction * 100);
+          setLogs(prev => prev.map(l => l.id === uploadLogId ? { ...l, msg: `${logPrefix} Enviando o vídeo (${sizeMb} MB) — ${pct}%` } : l));
         });
       } catch (caught) {
         updateLogById(uploadLogId, 'error');
@@ -1521,7 +1688,8 @@ ${rows.map(r => `<tr>
       let campaignId;
       if (campAction === 'existing') {
         campaignId = campData.existingId;
-        pushLog(`Usando campanha: "${apiData.campaigns.find(c => c.id === campaignId)?.name || campaignId}"`, 'success');
+        const campaignNames = selectedCampaignIds.map(id => apiData.campaigns.find(c => c.id === id)?.name || id);
+        pushLog(`Usando ${campaignNames.length > 1 ? `${campaignNames.length} campanhas` : 'campanha'}: ${campaignNames.map(n => `"${n}"`).join(', ')}`, 'success');
         setProgress(15);
       } else {
         pushLog(`Criando campanha: "${campData.name}"...`);
@@ -1642,67 +1810,51 @@ ${rows.map(r => `<tr>
         setProgress(25);
       }
 
-      // ── Resolver destination_type + promoted_object do conjunto ─────────────
+      // ── Destino de cada conjunto ─────────────────────────────────────────────
+      // Com várias campanhas, cada conjunto pode ter destino próprio. O destino
+      // define CTA, link e formato do criativo, então é resolvido um a um.
       const KNOWN_DEST_TYPES = ['WEBSITE', 'WHATSAPP', 'MESSENGER', 'INSTAGRAM_DIRECT', 'ON_AD', 'APP', 'FACEBOOK'];
-      let resolvedDestType = 'WEBSITE';
-      let adSetPromotedObject = null;
-      let isMultiDestAdSet = false; // adsets de múltiplos destinos exigem degrees_of_freedom_spec no criativo
-      if (campAction === 'existing' && adSetAction === 'existing' && allAdSetIds.length > 0) {
-        const cached = existingAdSets.find(a => a.id === allAdSetIds[0]);
-        const cachedDestType = cached?.destination_type;
-        if (cachedDestType && KNOWN_DEST_TYPES.includes(cachedDestType)) {
-          resolvedDestType = cachedDestType;
-        } else {
-          // destination_type indefinido ('UNDEFINED', null, etc.) → adset multi-destino
-          isMultiDestAdSet = true;
-          if (cachedDestType && !KNOWN_DEST_TYPES.includes(cachedDestType)) {
-            pushLog(`⚠️ destination_type "${cachedDestType}" — tratando como multi-destino`, 'loading');
-          }
-          const dtRes = await metaGet(allAdSetIds[0], { fields: 'destination_type,promoted_object,optimization_goal' }).catch(() => ({}));
-          const apiDest = dtRes.destination_type;
-          if (apiDest && KNOWN_DEST_TYPES.includes(apiDest)) {
-            resolvedDestType = apiDest;
-            isMultiDestAdSet = false; // API confirmou destino único
-          } else if (dtRes.optimization_goal === 'CONVERSATIONS') {
-            resolvedDestType = 'WHATSAPP';
-            pushLog(`⚠️ destination_type indefinido — inferido como WHATSAPP por optimization_goal=CONVERSATIONS`, 'loading');
-          } else {
-            resolvedDestType = 'WEBSITE';
-          }
-          adSetPromotedObject = dtRes.promoted_object || null;
+      const usingExistingTargets = campAction === 'existing' && adSetAction === 'existing' && allAdSetIds.length > 0;
+      const resolveAdSetDestination = async (adSetId) => {
+        if (!usingExistingTargets) return { destType: 'WEBSITE', promotedObject: null, isMultiDest: false };
+        const cached = existingAdSets.find(a => a.id === adSetId);
+        const info = await metaGet(adSetId, { fields: 'destination_type,promoted_object,optimization_goal' }, rateLimitNotice).catch(() => ({}));
+        const declared = info.destination_type || cached?.destination_type;
+        if (declared && KNOWN_DEST_TYPES.includes(declared)) {
+          return { destType: declared, promotedObject: info.promoted_object || null, isMultiDest: false };
         }
-        pushLog(`Destino do conjunto: ${resolvedDestType}${isMultiDestAdSet ? ' (multi-destino)' : ''}`, 'success');
-        // Buscar promoted_object se ainda não foi obtido
-        if (!adSetPromotedObject) {
-          const poRes = await metaGet(allAdSetIds[0], { fields: 'promoted_object,optimization_goal' }).catch(() => ({}));
-          adSetPromotedObject = poRes.promoted_object || null;
-        }
+        // destination_type indefinido → conjunto multi-destino
+        const destType = info.optimization_goal === 'CONVERSATIONS' ? 'WHATSAPP' : 'WEBSITE';
+        return { destType, promotedObject: info.promoted_object || null, isMultiDest: true };
+      };
+
+      const targets = [];
+      for (const adSetId of allAdSetIds) {
+        const name = existingAdSets.find(a => a.id === adSetId)?.name || (allAdSetIds.length === 1 ? adSetData.name : adSetId);
+        const dest = await resolveAdSetDestination(adSetId);
+        targets.push({ adSetId, name, ...dest });
       }
+      const destTypes = [...new Set(targets.map(t => `${t.destType}${t.isMultiDest ? ' (multi-destino)' : ''}`))];
+      pushLog(`Destino ${targets.length > 1 ? 'dos conjuntos' : 'do conjunto'}: ${destTypes.join(', ')}`, 'success');
+
+      const effectiveObjPub = campaignObjective || campData.objective;
+      const destFlags = (destType) => {
+        const isWhatsApp  = destType === 'WHATSAPP'  || (forceMessagesDest && destType !== 'MESSENGER' && destType !== 'INSTAGRAM_DIRECT');
+        const isMessenger = destType === 'MESSENGER' || (forceMessagesDest && destType === 'MESSENGER');
+        const isMsgDest   = isWhatsApp || isMessenger || destType === 'INSTAGRAM_DIRECT' || forceMessagesDest;
+        const isLeadForm  = (effectiveObjPub === 'OUTCOME_LEADS' && leadDestType === 'INSTANT_FORM') || destType === 'ON_AD';
+        return { isWhatsApp, isMessenger, isMsgDest, isLeadForm };
+      };
+      const objLabels = { OUTCOME_TRAFFIC: '🚦 Tráfego', OUTCOME_LEADS: '📋 Leads', OUTCOME_SALES: '🛒 Vendas', OUTCOME_ENGAGEMENT: '💬 Engajamento' };
+      pushLog(`Objetivo: ${objLabels[effectiveObjPub] || effectiveObjPub}`, 'success');
 
       // ── 3. Upload de mídias em paralelo ──────────────────────────────────────
-      const isWhatsApp  = resolvedDestType === 'WHATSAPP'  || (forceMessagesDest && resolvedDestType !== 'MESSENGER' && resolvedDestType !== 'INSTAGRAM_DIRECT');
-      const isMessenger = resolvedDestType === 'MESSENGER' || (forceMessagesDest && resolvedDestType === 'MESSENGER');
-      const isMsgDest   = isWhatsApp || isMessenger || resolvedDestType === 'INSTAGRAM_DIRECT' || forceMessagesDest;
-      const effectiveObjPub = campaignObjective || campData.objective;
-      const isLeadForm  = (effectiveObjPub === 'OUTCOME_LEADS' && leadDestType === 'INSTANT_FORM')
-                        || resolvedDestType === 'ON_AD';
-      const finalUrl = (isMsgDest || !needsUrl) ? '' : (adsData.link + (adsData.utmTags || ''));
-
-      if (isMsgDest) {
-        const destLabel = { WHATSAPP: 'WhatsApp', MESSENGER: 'Messenger', INSTAGRAM_DIRECT: 'Instagram Direct' }[resolvedDestType] || resolvedDestType;
-        pushLog(`📱 Destino: ${destLabel} — criativo sem URL externa`, 'success');
-      } else if (isLeadForm) {
-        pushLog(`📋 Destino: Formulário Instantâneo (Lead Form)`, 'success');
-      } else {
-        const objLabels = { OUTCOME_TRAFFIC: '🚦 Tráfego', OUTCOME_LEADS: '📋 Leads', OUTCOME_SALES: '🛒 Vendas', OUTCOME_ENGAGEMENT: '💬 Engajamento' };
-        pushLog(`Objetivo: ${objLabels[effectiveObjPub] || effectiveObjPub} | Destino: ${resolvedDestType}`, 'success');
-      }
-
-      pushLog(`Enviando ${mediaFiles.length} mídia(s) em paralelo (máx 5)...`);
+      const units = adUnits.map((media, i) => ({ media, story: storyOf(media.id), adName: resolveAdName(adsData.namingPattern, i + 1) }));
+      const pairedCount = units.filter(u => u.story).length;
+      pushLog(`Enviando ${mediaFiles.length} mídia(s) em paralelo (máx 5)${pairedCount ? ` · ${pairedCount} anúncio(s) com versão Feed + Stories` : ''}...`);
 
       const uploadResults = await Promise.all(mediaFiles.map(async (media, i) => {
         const logPrefix = `[${i + 1}/${mediaFiles.length}]`;
-        const adName = resolveAdName(adsData.namingPattern, i + 1);
         const logId = `up-${i}`;
         setLogs(prev => [...prev, { id: logId, msg: `${logPrefix} Enviando: ${media.file.name}...`, status: 'loading' }]);
         try {
@@ -1716,11 +1868,10 @@ ${rows.map(r => `<tr>
             saveCache();
           }
           if (uploadCache[hash]) {
-            // Thumbnail também pode estar em cache; se não, recaptura agora
-            let thumbHash = uploadCache[thumbCacheKey] || null;
+            const thumbHash = uploadCache[thumbCacheKey] || null;
             updateLogById(logId, 'success');
             pushLog(`${logPrefix} ♻️ Reutilizando (${media.file.name})`, 'success');
-            return { uploaded: uploadCache[hash], thumbHash, adName, fileId: media.id };
+            return { uploaded: uploadCache[hash], thumbHash, fileId: media.id };
           }
           const [uploaded, thumbHash] = await Promise.all([
             sem(() => media.type === 'IMAGE' ? uploadImage(media.file) : uploadVideo(media.file, logPrefix)),
@@ -1732,15 +1883,15 @@ ${rows.map(r => `<tr>
           saveCache();
           updateLogById(logId, 'success');
           setProgress(prev => Math.min(prev + Math.round(55 / mediaFiles.length), 80));
-          return { uploaded, thumbHash, adName, fileId: media.id };
+          return { uploaded, thumbHash, fileId: media.id };
         } catch (e) {
           updateLogById(logId, 'error');
           throw e;
         }
       }));
+      const uploadedById = new Map(uploadResults.map(r => [r.fileId, r]));
 
-      // ── 4. Batch: criativos ──────────────────────────────────────────────────
-      pushLog(`Criando ${uploadResults.length} criativo(s) via Batch API...`);
+      // ── 4. Criativos (um por mídia e conjunto; iguais são reaproveitados) ───
       const resolveCopy = (fileId) => individualCopyMode ? {
         primaryText:      adCopyOverrides[fileId]?.primaryText      ?? adsData.primaryText,
         title:            adCopyOverrides[fileId]?.title             ?? adsData.title,
@@ -1752,70 +1903,138 @@ ${rows.map(r => `<tr>
         leadFormId:       adCopyOverrides[fileId]?.leadFormId        ?? adsData.leadFormId,
       } : adsData;
 
-      const creativeBatch = uploadResults.map(({ uploaded, thumbHash, adName, fileId }) => {
-        const copy = resolveCopy(fileId);
-        const perFileFinalUrl = (isMsgDest || !needsUrl) ? '' : (copy.link + (copy.utmTags || ''));
-        const isMultiDest = isMultiDestAdSet;
-        const storySpec = JSON.stringify(buildStorySpec({
-          uploaded, thumbHash, isMsgDest, isWhatsApp, isMessenger, isLeadForm,
-          isMultiDest, finalUrl: perFileFinalUrl, pageId: accountData.pageId,
-          igId: adSetData.igId || '', copy,
-        }));
-        const originalMediaFeatures = uploaded.type === 'VIDEO'
-          ? {
-              advantage_plus_creative: { enroll_status: 'OPT_OUT' },
-              video_auto_crop: { enroll_status: 'OPT_OUT' },
-              video_uncrop: { enroll_status: 'OPT_OUT' },
-            }
-          : {
-              advantage_plus_creative: { enroll_status: 'OPT_OUT' },
-              image_uncrop: { enroll_status: 'OPT_OUT' },
-              image_touchups: { enroll_status: 'OPT_OUT' },
-            };
-        const creativeParams = (isMultiDest || preserveOriginalMedia) ? {
-          name: `Creative - ${adName}`,
-          object_story_spec: storySpec,
-          degrees_of_freedom_spec: JSON.stringify({ creative_features_spec: preserveOriginalMedia ? originalMediaFeatures : {} }),
-        } : {
-          name: `Creative - ${adName}`,
-          object_story_spec: storySpec,
+      // Herança: o que o conjunto já usa tem prioridade sobre a copy digitada.
+      const copyFor = (target, fileId) => {
+        const base = { ...resolveCopy(fileId), inheritedUrlTags: '' };
+        const inherited = inheritanceFor(target.adSetId)?.data;
+        if (!inherited) return base;
+        return {
+          ...base,
+          ...(inheritCopy ? {
+            primaryText: inherited.primaryText || base.primaryText,
+            title: inherited.title || base.title,
+            description: inherited.description || base.description,
+            cta: inherited.cta || base.cta,
+          } : {}),
+          ...(inheritUrl && inherited.link ? { link: inherited.link, utmTags: '', inheritedUrlTags: inherited.urlTags || '' } : {}),
         };
-        return buildBatchItem(`${adAccountId}/adcreatives`, creativeParams);
-      });
+      };
 
-      const batchCreativeRes = await metaBatch(creativeBatch, rateLimitNotice);
-      const creativeIds = [];
-      for (let i = 0; i < batchCreativeRes.length; i++) {
-        let body;
-        try { body = JSON.parse(batchCreativeRes[i].body || '{}'); } catch { body = {}; }
-        if (batchCreativeRes[i].code !== 200 || body.error) {
-          throw new Error(`Criativo [${i + 1}]: ${body.error?.message || `HTTP ${batchCreativeRes[i].code}`} | Subcode: ${body.error?.error_subcode || 'N/A'}`);
+      const originalMediaFeatures = (type) => type === 'VIDEO'
+        ? {
+            advantage_plus_creative: { enroll_status: 'OPT_OUT' },
+            video_auto_crop: { enroll_status: 'OPT_OUT' },
+            video_uncrop: { enroll_status: 'OPT_OUT' },
+          }
+        : {
+            advantage_plus_creative: { enroll_status: 'OPT_OUT' },
+            image_uncrop: { enroll_status: 'OPT_OUT' },
+            image_touchups: { enroll_status: 'OPT_OUT' },
+          };
+
+      const storyWarnings = new Set();
+      const buildCreativeParams = (target, unit) => {
+        const flags = destFlags(target.destType);
+        const copy = copyFor(target, unit.media.id);
+        const perFileFinalUrl = (flags.isMsgDest || !needsUrl) ? '' : (copy.link + (copy.utmTags || ''));
+        const feedUp = uploadedById.get(unit.media.id);
+        const storyUp = unit.story ? uploadedById.get(unit.story.id) : null;
+        // Feed + Stories no mesmo anúncio só funciona com destino site: a Meta
+        // aceita um único link_urls e não suporta CTA de mensagem/formulário aqui.
+        const canUsePlacements = Boolean(storyUp && perFileFinalUrl && !flags.isMsgDest && !flags.isLeadForm && !target.isMultiDest);
+        if (storyUp && !canUsePlacements) storyWarnings.add(target.name);
+
+        const igId = adSetData.igId || '';
+        let params;
+        if (canUsePlacements) {
+          const asset = (up) => ({ videoId: up.uploaded.id, hash: up.uploaded.hash, thumbHash: up.thumbHash });
+          params = {
+            object_story_spec: JSON.stringify({ page_id: accountData.pageId, ...(igId ? { instagram_user_id: igId } : {}) }),
+            asset_feed_spec: JSON.stringify(buildPlacementAssetFeedSpec({
+              mediaType: feedUp.uploaded.type,
+              feed: asset(feedUp),
+              story: asset(storyUp),
+              copy,
+              link: perFileFinalUrl,
+            })),
+          };
+        } else {
+          params = {
+            object_story_spec: JSON.stringify(buildStorySpec({
+              uploaded: feedUp.uploaded, thumbHash: feedUp.thumbHash, ...flags,
+              isMultiDest: target.isMultiDest, finalUrl: perFileFinalUrl, pageId: accountData.pageId,
+              igId, copy,
+            })),
+          };
         }
-        creativeIds.push(body.id);
+        if (target.isMultiDest || preserveOriginalMedia) {
+          params.degrees_of_freedom_spec = JSON.stringify({ creative_features_spec: preserveOriginalMedia ? originalMediaFeatures(feedUp.uploaded.type) : {} });
+        }
+        if (copy.inheritedUrlTags) params.url_tags = copy.inheritedUrlTags;
+        return params;
+      };
+
+      const uniqueCreatives = [];           // [{ params }]
+      const creativeIndexByKey = new Map(); // conteúdo → índice (dedupe)
+      const plan = targets.map(target => ({
+        target,
+        items: units.map((unit) => {
+          const params = buildCreativeParams(target, unit);
+          const key = JSON.stringify(params);
+          if (!creativeIndexByKey.has(key)) {
+            creativeIndexByKey.set(key, uniqueCreatives.length);
+            const suffix = inheritActive && targets.length > 1 ? ` · ${String(target.name).slice(0, 60)}` : '';
+            uniqueCreatives.push({ params: { name: `Creative - ${unit.adName}${suffix}`, ...params } });
+          }
+          return { unit, creativeIndex: creativeIndexByKey.get(key) };
+        }),
+      }));
+      for (const name of storyWarnings) {
+        pushLog(`⚠️ "${name}": Feed + Stories só funciona com destino site — publicada só a versão de feed.`, 'success');
+      }
+      if (inheritActive) {
+        const inheritedCount = targets.filter(t => inheritanceFor(t.adSetId)?.data).length;
+        pushLog(`Herança: ${inheritedCount}/${targets.length} conjunto(s) com ${[inheritUrl && 'URL', inheritCopy && 'copy'].filter(Boolean).join(' e ')} dos anúncios que já rodam.`, 'success');
+      }
+
+      pushLog(`Criando ${uniqueCreatives.length} criativo(s) via Batch API...`);
+      const creativeIds = [];
+      for (let start = 0; start < uniqueCreatives.length; start += 50) {
+        const chunk = uniqueCreatives.slice(start, start + 50);
+        const batchCreativeRes = await metaBatch(chunk.map(c => buildBatchItem(`${adAccountId}/adcreatives`, c.params)), rateLimitNotice);
+        for (let i = 0; i < batchCreativeRes.length; i++) {
+          let body;
+          try { body = JSON.parse(batchCreativeRes[i].body || '{}'); } catch { body = {}; }
+          if (batchCreativeRes[i].code !== 200 || body.error) {
+            throw new Error(`Criativo [${start + i + 1}]: ${body.error?.error_user_msg || body.error?.message || `HTTP ${batchCreativeRes[i].code}`} | Subcode: ${body.error?.error_subcode || 'N/A'}`);
+          }
+          creativeIds.push(body.id);
+        }
       }
       updateLastLog('success');
       setProgress(90);
 
-      // ── 5. Batch: anúncios (loop por AdSet) ──────────────────────────────────
+      // ── 5. Batch: anúncios (loop por conjunto) ───────────────────────────────
       let totalCreated = 0;
       const createdAdIdsByMedia = new Map();
-      for (let si = 0; si < allAdSetIds.length; si++) {
-        const currentAdSetId = allAdSetIds[si];
-        const currentAdSetName = existingAdSets.find(a => a.id === currentAdSetId)?.name || currentAdSetId;
+      for (let si = 0; si < plan.length; si++) {
+        const { target, items } = plan[si];
+        const currentAdSetId = target.adSetId;
+        const currentAdSetName = target.name;
         const adsLogId = `ads-batch-${si}`;
-        setLogs(prev => [...prev, { id: adsLogId, msg: `Criando ${creativeIds.length} anúncio(s) no conjunto "${currentAdSetName}" (${si + 1}/${allAdSetIds.length})...`, status: 'loading' }]);
+        setLogs(prev => [...prev, { id: adsLogId, msg: `Criando ${items.length} anúncio(s) no conjunto "${currentAdSetName}" (${si + 1}/${plan.length})...`, status: 'loading' }]);
 
         // tracking_specs obrigatório quando o conjunto usa pixel (evita erro 2446493)
-        const pixelId = adSetPromotedObject?.pixel_id;
+        const pixelId = target.promotedObject?.pixel_id;
         const trackingSpecs = pixelId
           ? JSON.stringify([{ 'action.type': ['offsite_conversion'], fb_pixel: [pixelId] }])
           : null;
 
-        const adsBatch = uploadResults.map(({ adName }, idx) =>
+        const adsBatch = items.map(({ unit, creativeIndex }) =>
           buildBatchItem(`${adAccountId}/ads`, {
-            name: adName,
+            name: unit.adName,
             adset_id: currentAdSetId,
-            creative: JSON.stringify({ creative_id: creativeIds[idx] }),
+            creative: JSON.stringify({ creative_id: creativeIds[creativeIndex] }),
             status: createAsDraft ? 'DRAFT' : 'PAUSED',
             ...(trackingSpecs ? { tracking_specs: trackingSpecs } : {}),
           })
@@ -1856,16 +2075,16 @@ ${rows.map(r => `<tr>
           setError('ADVERTISER_VERIFICATION');
         }
         updateLogById(adsLogId, okCount > 0 ? 'success' : 'error');
-        pushLog(`${okCount > 0 ? '✅' : '❌'} ${okCount}/${creativeIds.length} anúncio(s) criado(s) em "${currentAdSetName}"`, okCount > 0 ? 'success' : 'error');
+        pushLog(`${okCount > 0 ? '✅' : '❌'} ${okCount}/${items.length} anúncio(s) criado(s) em "${currentAdSetName}"`, okCount > 0 ? 'success' : 'error');
         totalCreated += okCount;
       }
 
       setProgress(100);
       if (totalCreated === 0) {
-        throw new Error(`Nenhum anúncio foi criado (0/${creativeIds.length * allAdSetIds.length}). Veja os erros acima para detalhes.`);
+        throw new Error(`Nenhum anúncio foi criado (0/${units.length * plan.length}). Veja os erros acima para detalhes.`);
       }
       if (adsData.utmTags) pushLog('UTM tags aplicadas em todos os anúncios.', 'success');
-      pushLog(`✅ ${totalCreated} anúncio(s) no total (${allAdSetIds.length} conjunto(s)) — todos ${createAsDraft ? 'RASCUNHO' : 'PAUSADOS'}.`, 'success');
+      pushLog(`✅ ${totalCreated} anúncio(s) no total (${plan.length} conjunto(s)) — todos ${createAsDraft ? 'RASCUNHO' : 'PAUSADOS'}.`, 'success');
       pushLog(createAsDraft ? 'Rascunhos salvos. Revise e publique no Gerenciador de Anúncios.' : 'Revise e ative no Gerenciador de Anúncios quando pronto.', 'success');
       setPublishDone(true);
 
@@ -1876,7 +2095,7 @@ ${rows.map(r => `<tr>
         clientName: clientInfo.name || card.clientId,
         cardTitle: card.title,
         campaignName: campAction === 'existing'
-          ? (apiData.campaigns.find(c => c.id === campData.existingId)?.name || campData.existingId)
+          ? selectedCampaignIds.map(id => apiData.campaigns.find(c => c.id === id)?.name || id).join(' · ')
           : campData.name,
         bmId:          accountData.bmId,
         bmName:        bms.find(b => b.id === accountData.bmId)?.name || '',
@@ -1885,22 +2104,22 @@ ${rows.map(r => `<tr>
         pageId:        accountData.pageId,
         pageName:      apiData.pages.find(p => p.id === accountData.pageId)?.name || '',
         reuseConfig: {
-          accountData, campAction, campData, adSetAction, selectedAdSetIds, adSetData,
+          accountData, campAction, campData, adSetAction, selectedCampaignIds, selectedAdSetIds, adSetData,
           adsData, forceMessagesDest, leadDestType, saleConversionEvent,
-          individualCopyMode, adCopyOverrides, preserveOriginalMedia,
+          individualCopyMode, adCopyOverrides, preserveOriginalMedia, inheritUrl, inheritCopy,
         },
-        ads: mediaFiles.map((media, i) => {
-          const copy = resolveCopy(media.id);
+        ads: units.map((unit, i) => {
+          const copy = plan[0] ? copyFor(plan[0].target, unit.media.id) : resolveCopy(unit.media.id);
           return {
-            adName: resolveAdName(adsData.namingPattern, i + 1),
+            adName: unit.adName,
             primaryText: copy.primaryText,
             title: copy.title,
             description: copy.description,
             link: copy.link,
-            fileName: media.file.name,
-            mediaType: media.type,
-            thumbnailBase64: media.thumbnailBase64 || null,
-            metaCreativeId: creativeIds[i] || '',
+            fileName: unit.story ? `${unit.media.file.name} + ${unit.story.file.name} (Stories)` : unit.media.file.name,
+            mediaType: unit.media.type,
+            thumbnailBase64: unit.media.thumbnailBase64 || null,
+            metaCreativeId: plan[0] ? creativeIds[plan[0].items[i].creativeIndex] || '' : '',
             metaAdIds: createdAdIdsByMedia.get(i) || [],
           };
         }),
@@ -2153,11 +2372,12 @@ ${rows.map(r => `<tr>
               </button>
             ))}
 
-            {activeTab === 3 && mediaFiles.length > 0 && (
+            {activeTab === 3 && adUnits.length > 0 && (
               <div style={{ padding: '14px', background: 'var(--bg-app)', border: '1px solid var(--primary)', borderRadius: '10px' }}>
                 <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px', fontWeight: '600', textTransform: 'uppercase' }}>Resumo</div>
-                <div style={{ fontSize: '18px', color: 'var(--primary)', fontWeight: '800' }}>{mediaFiles.length} ad{mediaFiles.length > 1 ? 's' : ''}</div>
-                <div style={{ fontSize: '11px', color: 'var(--text-main)', marginTop: '2px' }}>prontos para publicar</div>
+                <div style={{ fontSize: '18px', color: 'var(--primary)', fontWeight: '800' }}>{adUnits.length} ad{adUnits.length > 1 ? 's' : ''}</div>
+                <div style={{ fontSize: '11px', color: 'var(--text-main)', marginTop: '2px' }}>{usingExistingAdSet && selectedAdSetIds.length > 1 ? `em cada um dos ${selectedAdSetIds.length} conjuntos` : 'prontos para publicar'}</div>
+                {pairedStoryIds.size > 0 && <div style={{ fontSize: '11px', color: '#c4b5fd', marginTop: '4px' }}>{pairedStoryIds.size} com Feed + Stories</div>}
               </div>
             )}
 
@@ -2772,34 +2992,39 @@ ${rows.map(r => `<tr>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                         <div>
                           <label style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '8px', display: 'block', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                            Campanha Ativa <span style={{ color: '#ef4444' }}>*</span>
+                            Campanhas <span style={{ color: '#ef4444' }}>*</span>
                           </label>
+                          <p style={{ margin: '-4px 0 8px', fontSize: '11px', color: 'var(--text-muted)', lineHeight: 1.5 }}>Pode marcar várias: os mesmos criativos vão para os conjuntos escolhidos, cada um com a copy e a URL que já usa.</p>
                           {apiData.campaigns.length === 0 ? (
                             <div style={{ fontSize: '13px', color: '#f59e0b', padding: '12px', background: 'rgba(245,158,11,0.08)', borderRadius: '8px' }}>
                               Nenhuma campanha ativa encontrada nesta conta.
                             </div>
                           ) : (
-                            <SearchableSelect
-                              items={apiData.campaigns}
-                              value={campData.existingId}
-                              onChange={id => { setCampData({ ...campData, existingId: id }); setAdSetAction('existing'); setSelectedAdSetIds([]); }}
-                              placeholder="Busque pelo nome da campanha..."
+                            <CampaignMultiSelect
+                              campaigns={apiData.campaigns}
+                              selectedIds={selectedCampaignIds}
+                              onChange={ids => { changeCampaignSelection(ids); if (ids.length <= 1) setAdSetAction('existing'); }}
                             />
                           )}
                         </div>
 
-                        {campData.existingId && (
+                        {campaignObjectives.length > 1 && (
+                          <div style={{ fontSize: '12px', color: '#f59e0b', padding: '10px 12px', background: 'rgba(245,158,11,0.08)', borderRadius: '8px' }}>
+                            As campanhas marcadas têm objetivos diferentes ({campaignObjectives.map(OBJECTIVE_LABEL).join(', ')}). Publique um objetivo por vez.
+                          </div>
+                        )}
+                        {selectedCampaignIds.length > 0 && (
                           <div>
                             <label style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '8px', display: 'block', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                               Conjunto de Anúncios
                             </label>
-                            <div style={{ display: 'flex', background: 'var(--bg-surface)', border: '1px solid var(--border-light)', borderRadius: '8px', padding: '4px', width: 'fit-content', marginBottom: '10px' }}>
+                            {selectedCampaignIds.length === 1 && <div style={{ display: 'flex', background: 'var(--bg-surface)', border: '1px solid var(--border-light)', borderRadius: '8px', padding: '4px', width: 'fit-content', marginBottom: '10px' }}>
                               {[['new', '+ Criar Novo'], ['existing', 'Usar Existente']].map(([v, l]) => (
                                 <button key={v} onClick={() => setAdSetAction(v)} style={{ padding: '7px 16px', borderRadius: '6px', fontSize: '12px', fontWeight: '600', border: 'none', background: adSetAction === v ? 'var(--bg-app)' : 'transparent', color: adSetAction === v ? 'var(--text-main)' : 'var(--text-muted)', cursor: 'pointer', boxShadow: adSetAction === v ? '0 2px 6px rgba(0,0,0,0.12)' : 'none', transition: 'all 0.15s' }}>
                                   {l}
                                 </button>
                               ))}
-                            </div>
+                            </div>}
                             {adSetAction === 'existing' && (
                               loadingAdSets ? (
                                 <div style={{ fontSize: '13px', color: adSetFetchError ? '#f59e0b' : 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -2825,13 +3050,20 @@ ${rows.map(r => `<tr>
                                     )}
                                   </div>
                                   {/* Lista de checkboxes */}
-                                  <div style={{ maxHeight: '200px', overflowY: 'auto', border: '1px solid var(--border-light)', borderRadius: '8px', background: 'var(--bg-surface)' }}>
-                                    {existingAdSets.map(adSet => {
+                                  <div style={{ maxHeight: selectedCampaignIds.length > 1 ? '300px' : '200px', overflowY: 'auto', border: '1px solid var(--border-light)', borderRadius: '8px', background: 'var(--bg-surface)' }}>
+                                    {existingAdSets.map((adSet, adSetIndex) => {
                                       const isDisabled = adSet.status === 'DELETED' || adSet.status === 'ARCHIVED';
                                       const isChecked = selectedAdSetIds.includes(adSet.id);
+                                      const showCampaignHeader = selectedCampaignIds.length > 1 && (adSetIndex === 0 || existingAdSets[adSetIndex - 1].campaign_id !== adSet.campaign_id);
                                       return (
+                                        <div key={adSet.id}>
+                                        {showCampaignHeader && (
+                                          <div style={{ padding: '7px 12px', fontSize: '10px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--primary)', background: 'var(--bg-app)', borderBottom: '1px solid var(--border-light)', display: 'flex', justifyContent: 'space-between', gap: '8px' }}>
+                                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{adSet.campaignName}</span>
+                                            <button type="button" onClick={() => setSelectedAdSetIds(prev => [...new Set([...prev, ...existingAdSets.filter(a => a.campaign_id === adSet.campaign_id).map(a => a.id)])])} style={{ fontSize: '10px', border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', textTransform: 'none' }}>Marcar todos</button>
+                                          </div>
+                                        )}
                                         <label
-                                          key={adSet.id}
                                           style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px', cursor: isDisabled ? 'not-allowed' : 'pointer', opacity: isDisabled ? 0.4 : 1, borderBottom: '1px solid var(--border-light)', background: isChecked ? 'rgba(16,185,129,0.06)' : 'transparent' }}
                                         >
                                           <input
@@ -2847,6 +3079,7 @@ ${rows.map(r => `<tr>
                                           </div>
                                           {isDisabled && <span style={{ fontSize: '9px', fontWeight: '800', background: 'rgba(239,68,68,0.2)', color: '#ef4444', padding: '2px 6px', borderRadius: '4px', flexShrink: 0 }}>INATIVA</span>}
                                         </label>
+                                        </div>
                                       );
                                     })}
                                   </div>
@@ -2857,7 +3090,7 @@ ${rows.map(r => `<tr>
                                   <button onClick={() => setAdSetRetryKey(k => k + 1)} style={{ fontSize: '11px', padding: '3px 8px', borderRadius: '4px', border: '1px solid #ef4444', background: 'transparent', color: '#ef4444', cursor: 'pointer', whiteSpace: 'nowrap' }}>Tentar novamente</button>
                                 </div>
                               ) : (
-                                <div style={{ fontSize: '12px', color: '#f59e0b' }}>Nenhum conjunto ativo encontrado nesta campanha.</div>
+                                <div style={{ fontSize: '12px', color: '#f59e0b' }}>Nenhum conjunto ativo encontrado {selectedCampaignIds.length > 1 ? 'nestas campanhas' : 'nesta campanha'}.</div>
                               )
                             )}
                           </div>
@@ -3056,9 +3289,40 @@ ${rows.map(r => `<tr>
 
                 {/* ── ABA 3: Anúncios (lote) ── */}
                 {activeTab === 3 && (() => {
-                  const activeId = activeCopyFileId || (mediaFiles[0]?.id ?? null);
-                  const activeIdx = mediaFiles.findIndex(m => m.id === activeId);
-                  const activeMedia = mediaFiles[activeIdx] ?? null;
+                  const activeId = adUnits.some(m => m.id === activeCopyFileId) ? activeCopyFileId : (adUnits[0]?.id ?? null);
+                  const activeIdx = adUnits.findIndex(m => m.id === activeId);
+                  const activeMedia = adUnits[activeIdx] ?? null;
+                  const unitIndexById = Object.fromEntries(adUnits.map((m, i) => [m.id, i]));
+                  const feedOfStory = Object.fromEntries(Object.entries(storyPairs).map(([feedId, storyId]) => [storyId, feedId]));
+                  const placementsSupported = !isAutoMsgDest && !isLeadFormDest;
+                  const formatBadge = (m) => {
+                    const isStory = m.placement === 'story';
+                    return (
+                      <span style={{ fontSize: '8px', fontWeight: '800', padding: '1px 4px', borderRadius: '3px', background: isStory ? 'rgba(139,92,246,0.85)' : 'rgba(16,185,129,0.85)', color: 'white', letterSpacing: '0.3px' }}>
+                        {isStory ? 'STORIES' : 'FEED'}{aspectLabel(m.width, m.height) ? ` ${aspectLabel(m.width, m.height)}` : ''}
+                      </span>
+                    );
+                  };
+                  // Escolha da versão 9:16 de um anúncio: mesma mídia (imagem/vídeo)
+                  // que não seja ela própria um anúncio com Stories já pareado.
+                  const storyPicker = (unit) => {
+                    const current = storyPairs[unit.id] || '';
+                    const candidates = mediaFiles.filter(m =>
+                      m.id !== unit.id && m.type === unit.type && !storyPairs[m.id] && (!feedOfStory[m.id] || feedOfStory[m.id] === unit.id)
+                    );
+                    return (
+                      <select
+                        value={current}
+                        onChange={e => pairStory(unit.id, e.target.value)}
+                        style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', border: `1px solid ${current ? 'rgba(139,92,246,0.5)' : 'var(--border-main)'}`, background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '11px', outline: 'none' }}
+                      >
+                        <option value="">Sem versão Stories (só feed)</option>
+                        {candidates.map(m => (
+                          <option key={m.id} value={m.id}>{m.placement === 'story' ? '9:16 · ' : ''}{m.file.name}</option>
+                        ))}
+                      </select>
+                    );
+                  };
                   const formatModeControl = (
                     <div style={{ width: '100%', maxWidth: '520px', padding: '12px', borderRadius: '12px', border: '1px solid var(--border-light)', background: 'var(--bg-surface)' }}>
                       <div style={{ fontSize: '11px', fontWeight: '800', color: 'var(--text-main)', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.4px' }}>Formato nos posicionamentos</div>
@@ -3120,20 +3384,25 @@ ${rows.map(r => `<tr>
                         <span style={{ fontSize: '9px', fontWeight: '700', color: 'var(--primary)', textAlign: 'center', lineHeight: 1.2 }}>Upload ({mediaFiles.length})</span>
                       </label>
 
-                      {mediaFiles.map((m, idx) => {
-                        const isActive = individualCopyMode && m.id === activeId;
-                        const hasAny = Object.keys(adCopyOverrides[m.id] || {}).length > 0;
+                      {mediaFiles.map((m) => {
+                        const pairedFeedId = feedOfStory[m.id];
+                        const unitIdx = unitIndexById[pairedFeedId || m.id];
+                        const isActive = individualCopyMode && (m.id === activeId || pairedFeedId === activeId);
+                        const hasAny = Object.keys(adCopyOverrides[pairedFeedId || m.id] || {}).length > 0;
                         return (
                           <div key={m.id}
-                            onClick={() => { if (individualCopyMode) setActiveCopyFileId(m.id); }}
+                            title={pairedFeedId ? `Versão Stories do AD${String(unitIdx + 1).padStart(2, '0')}` : m.file.name}
+                            onClick={() => { if (individualCopyMode) setActiveCopyFileId(pairedFeedId || m.id); }}
                             style={{ position: 'relative', borderRadius: '8px', overflow: 'hidden', background: '#000', aspectRatio: '1/1', flexShrink: 0, cursor: individualCopyMode ? 'pointer' : 'default', border: isActive ? '2px solid var(--primary)' : '2px solid transparent', boxShadow: isActive ? '0 0 0 2px rgba(16,185,129,0.3)' : 'none', transition: 'all 0.15s' }}
                           >
                             {m.type === 'IMAGE'
                               ? <img src={m.preview} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: isActive ? 1 : 0.7 }} />
                               : <video src={m.preview} muted preload="metadata" playsInline style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: isActive ? 1 : 0.7 }} />}
+                            {/* Formato (Feed / Stories) */}
+                            <div style={{ position: 'absolute', top: '3px', left: '3px' }}>{formatBadge(m)}</div>
                             {/* Badge número */}
                             <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: '3px 5px', background: 'linear-gradient(to top, rgba(0,0,0,0.8), transparent)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-                              <span style={{ color: isActive ? '#34d399' : 'white', fontSize: '9px', fontWeight: '800' }}>AD{String(idx + 1).padStart(2, '0')}</span>
+                              <span style={{ color: isActive ? '#34d399' : pairedFeedId ? '#c4b5fd' : 'white', fontSize: '9px', fontWeight: '800' }}>{pairedFeedId ? '↳ ' : ''}AD{String(unitIdx + 1).padStart(2, '0')}{pairedFeedId ? ' · Stories' : storyPairs[m.id] ? ' · Feed' : ''}</span>
                               {hasAny && <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981', flexShrink: 0 }} />}
                             </div>
                             {/* Botão remover */}
@@ -3163,19 +3432,23 @@ ${rows.map(r => `<tr>
                           {activeMedia.file.name}
                         </div>
                         <div style={{ fontSize: '10px', color: 'var(--text-muted)', textAlign: 'center' }}>
-                          {activeMedia.type} · {(activeMedia.file.size / 1024 / 1024).toFixed(1)} MB
+                          {activeMedia.type} · {(activeMedia.file.size / 1024 / 1024).toFixed(1)} MB{aspectLabel(activeMedia.width, activeMedia.height) ? ` · ${aspectLabel(activeMedia.width, activeMedia.height)}` : ''}
+                        </div>
+                        <div>
+                          <div style={{ fontSize: '10px', fontWeight: '800', color: '#c4b5fd', textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '4px' }}>Versão Stories / Reels</div>
+                          {storyPicker(activeMedia)}
                         </div>
                         {/* Navegação rápida */}
                         <div style={{ display: 'flex', gap: '6px', justifyContent: 'center' }}>
-                          <button onClick={() => { const prev = mediaFiles[activeIdx - 1]; if (prev) setActiveCopyFileId(prev.id); }}
+                          <button onClick={() => { const prev = adUnits[activeIdx - 1]; if (prev) setActiveCopyFileId(prev.id); }}
                             disabled={activeIdx === 0}
                             style={{ flex: 1, padding: '5px', borderRadius: '6px', border: '1px solid var(--border-main)', background: 'transparent', color: activeIdx === 0 ? 'var(--border-main)' : 'var(--text-muted)', cursor: activeIdx === 0 ? 'not-allowed' : 'pointer', fontSize: '14px', fontWeight: '700' }}>
                             ‹
                           </button>
-                          <span style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', fontWeight: '600' }}>{activeIdx + 1}/{mediaFiles.length}</span>
-                          <button onClick={() => { const next = mediaFiles[activeIdx + 1]; if (next) setActiveCopyFileId(next.id); }}
-                            disabled={activeIdx === mediaFiles.length - 1}
-                            style={{ flex: 1, padding: '5px', borderRadius: '6px', border: '1px solid var(--border-main)', background: 'transparent', color: activeIdx === mediaFiles.length - 1 ? 'var(--border-main)' : 'var(--text-muted)', cursor: activeIdx === mediaFiles.length - 1 ? 'not-allowed' : 'pointer', fontSize: '14px', fontWeight: '700' }}>
+                          <span style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', fontWeight: '600' }}>{activeIdx + 1}/{adUnits.length}</span>
+                          <button onClick={() => { const next = adUnits[activeIdx + 1]; if (next) setActiveCopyFileId(next.id); }}
+                            disabled={activeIdx === adUnits.length - 1}
+                            style={{ flex: 1, padding: '5px', borderRadius: '6px', border: '1px solid var(--border-main)', background: 'transparent', color: activeIdx === adUnits.length - 1 ? 'var(--border-main)' : 'var(--text-muted)', cursor: activeIdx === adUnits.length - 1 ? 'not-allowed' : 'pointer', fontSize: '14px', fontWeight: '700' }}>
                             ›
                           </button>
                         </div>
@@ -3184,13 +3457,96 @@ ${rows.map(r => `<tr>
 
                     {/* Esquerda: area de upload no modo global (quando não individual) */}
                     {!individualCopyMode && (
-                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '16px', overflow: 'hidden' }}>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto', minWidth: 0 }}>
                       <h3 style={{ fontSize: '17px', fontWeight: '700', color: 'var(--text-main)', flexShrink: 0 }}>Criativos — até 20 mídias</h3>
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                        Envie a versão de <strong style={{ color: '#34d399' }}>Feed</strong> (1:1 ou 4:5) e a de <strong style={{ color: '#c4b5fd' }}>Stories/Reels</strong> (9:16) do mesmo criativo: o sistema junta as duas no mesmo anúncio e a Meta mostra cada uma no lugar certo. O pareamento é automático pelo nome do arquivo — confira abaixo.
+                      </div>
+                      {!placementsSupported && pairedStoryIds.size > 0 && (
+                        <div style={{ fontSize: '11px', color: '#f59e0b', padding: '8px 10px', borderRadius: '8px', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)' }}>
+                          Feed + Stories só funciona com destino site. Neste destino (mensagens/formulário) vai só a versão de feed.
+                        </div>
+                      )}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {adUnits.map((unit, i) => {
+                          const story = storyOf(unit.id);
+                          return (
+                            <div key={unit.id} style={{ display: 'grid', gridTemplateColumns: '44px 1fr', gap: '10px', alignItems: 'center', padding: '8px', borderRadius: '10px', border: `1px solid ${story ? 'rgba(139,92,246,0.35)' : 'var(--border-light)'}`, background: 'var(--bg-surface)' }}>
+                              <div style={{ width: '44px', height: '44px', borderRadius: '6px', overflow: 'hidden', background: '#000' }}>
+                                {unit.type === 'IMAGE'
+                                  ? <img src={unit.preview} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                  : <video src={unit.preview} muted preload="metadata" playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
+                              </div>
+                              <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+                                  <span style={{ fontSize: '11px', fontWeight: '800', color: 'var(--primary)' }}>{resolveAdName(adsData.namingPattern, i + 1)}</span>
+                                  {formatBadge(unit)}
+                                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={unit.file.name}>{unit.file.name}</span>
+                                </div>
+                                {storyPicker(unit)}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                     )}
 
                     {/* Direita: Copy */}
                     <div style={{ flex: 1, minWidth: 0, borderLeft: '1px solid var(--border-light)', paddingLeft: '20px', display: 'flex', flexDirection: 'column', gap: '14px', overflowY: 'auto' }}>
+                      {usingExistingAdSet && (
+                        <div style={{ padding: '12px', borderRadius: '10px', border: '1px solid rgba(47,128,255,0.35)', background: 'rgba(47,128,255,0.05)', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                          <div>
+                            <div style={{ fontSize: '11px', fontWeight: '800', color: '#93c5fd', textTransform: 'uppercase', letterSpacing: '0.4px' }}>Herdar de cada conjunto</div>
+                            <p style={{ margin: '4px 0 0', fontSize: '11px', color: 'var(--text-muted)', lineHeight: 1.5 }}>Cada conjunto recebe os criativos novos com a copy e a URL dos anúncios que já rodam nele — assim um conjunto não fica com URLs diferentes.</p>
+                          </div>
+                          <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-main)', cursor: 'pointer' }}>
+                              <input type="checkbox" checked={inheritUrl} onChange={e => setInheritUrl(e.target.checked)} style={{ accentColor: 'var(--primary)' }} /> Herdar URL
+                            </label>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-main)', cursor: 'pointer' }}>
+                              <input type="checkbox" checked={inheritCopy} onChange={e => setInheritCopy(e.target.checked)} style={{ accentColor: 'var(--primary)' }} /> Herdar copy (texto, título, descrição e CTA)
+                            </label>
+                          </div>
+                          {inheritActive && (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '260px', overflowY: 'auto' }}>
+                              {selectedAdSetIds.map(id => {
+                                const adSet = existingAdSets.find(a => a.id === id);
+                                const entry = adSetInheritance[id];
+                                const data = entry?.data;
+                                return (
+                                  <div key={id} style={{ padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--border-light)', background: 'var(--bg-surface)', fontSize: '11px' }}>
+                                    <div style={{ fontWeight: '700', color: 'var(--text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                      {adSet?.name || id}
+                                      {selectedCampaignIds.length > 1 && adSet?.campaignName && <span style={{ fontWeight: '500', color: 'var(--text-muted)' }}> · {adSet.campaignName}</span>}
+                                    </div>
+                                    {(!entry || entry.status === 'loading') && <div style={{ color: 'var(--text-muted)', marginTop: '3px', display: 'flex', alignItems: 'center', gap: '6px' }}><Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> Lendo os anúncios do conjunto...</div>}
+                                    {entry?.status === 'error' && <div style={{ color: '#ef4444', marginTop: '3px' }}>Não foi possível ler os anúncios: {entry.error}. Usa a copy e a URL abaixo.</div>}
+                                    {entry?.status === 'empty' && <div style={{ color: '#f59e0b', marginTop: '3px' }}>Conjunto sem anúncios — usa a copy e a URL preenchidas abaixo.</div>}
+                                    {entry?.status === 'ready' && data && (
+                                      <div style={{ marginTop: '3px', display: 'flex', flexDirection: 'column', gap: '2px', color: 'var(--text-muted)' }}>
+                                        {inheritUrl && <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={data.link}>🔗 {data.link || <em>sem URL nos anúncios — usa a URL abaixo</em>}</div>}
+                                        {inheritCopy && data.primaryText && <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={data.primaryText}>✍️ {data.primaryText}</div>}
+                                        {inheritCopy && data.title && <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>📰 {data.title}</div>}
+                                        <div style={{ fontSize: '10px' }}>Base: {data.adCount} anúncio(s) · referência "{data.sourceAdName}"</div>
+                                        {inheritUrl && data.distinctLinks.length > 1 && (
+                                          <div style={{ color: '#f59e0b', fontSize: '10px' }}>⚠️ Este conjunto já tem {data.distinctLinks.length} URLs diferentes — os novos anúncios usam a mais usada.</div>
+                                        )}
+                                        {inheritUrl && data.link && validateDestinationUrl(data.link) && <div style={{ color: '#ef4444', fontSize: '10px' }}>{validateDestinationUrl(data.link)}</div>}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {inheritActive && (
+                            <p style={{ margin: 0, fontSize: '10px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                              Os campos abaixo valem para o que não for herdado e para conjuntos sem anúncio.
+                            </p>
+                          )}
+                        </div>
+                      )}
                       <Field label="Nomenclatura do Anúncio" value={adsData.namingPattern} onChange={e => setAdsData({ ...adsData, namingPattern: e.target.value })} placeholder="AD{index}_DDMM_{index}" />
                       <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '-8px', lineHeight: '1.4' }}>
                         <strong style={{ color: 'var(--text-main)' }}>{'{index}'}</strong> → 01, 02... &nbsp;|&nbsp; <strong style={{ color: 'var(--text-main)' }}>{'{date}'}</strong> → {todayDDMM}
@@ -3203,8 +3559,8 @@ ${rows.map(r => `<tr>
                               {resolveAdName(adsData.namingPattern, i)}
                             </div>
                           ))}
-                          {mediaFiles.length > 3 && (
-                            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>+{mediaFiles.length - 3} mais...</div>
+                          {adUnits.length > 3 && (
+                            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>+{adUnits.length - 3} mais...</div>
                           )}
                         </div>
                       )}
@@ -3218,7 +3574,7 @@ ${rows.map(r => `<tr>
                             <button key={v} onClick={() => {
                               const toIndividual = v === 'individual';
                               setIndividualCopyMode(toIndividual);
-                              if (toIndividual && !activeCopyFileId && mediaFiles.length > 0) setActiveCopyFileId(mediaFiles[0].id);
+                              if (toIndividual && !activeCopyFileId && adUnits.length > 0) setActiveCopyFileId(adUnits[0].id);
                             }} style={{ padding: '4px 10px', borderRadius: '4px', fontSize: '11px', fontWeight: '700', border: 'none', background: (v === 'individual') === individualCopyMode ? 'var(--bg-app)' : 'transparent', color: (v === 'individual') === individualCopyMode ? 'var(--text-main)' : 'var(--text-muted)', cursor: 'pointer', boxShadow: (v === 'individual') === individualCopyMode ? '0 1px 4px rgba(0,0,0,0.15)' : 'none', transition: 'all 0.15s' }}>
                               {l}
                             </button>
@@ -3332,16 +3688,16 @@ ${rows.map(r => `<tr>
                         <>
                           <div>
                             <label style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '6px', display: 'block', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                              URL de Destino <span style={{ color: '#ef4444' }}>*</span>
+                              URL de Destino {inheritanceCoversUrl ? <span style={{ color: '#93c5fd', textTransform: 'none', fontWeight: '600' }}>(herdada de cada conjunto)</span> : <span style={{ color: '#ef4444' }}>*</span>}
                             </label>
                             <input
                               type="text"
                               value={adsData.link}
                               onChange={e => setAdsData({ ...adsData, link: e.target.value })}
                               placeholder="https://..."
-                              style={{ width: '100%', padding: '10px 14px', borderRadius: '8px', border: `1px solid ${!adsData.link.trim() ? 'rgba(239,68,68,0.5)' : 'var(--border-main)'}`, background: 'transparent', color: 'var(--text-main)', fontSize: '13px', outline: 'none', boxSizing: 'border-box' }}
+                              style={{ width: '100%', padding: '10px 14px', borderRadius: '8px', border: `1px solid ${!adsData.link.trim() && !inheritanceCoversUrl ? 'rgba(239,68,68,0.5)' : 'var(--border-main)'}`, background: 'transparent', color: 'var(--text-main)', fontSize: '13px', outline: 'none', boxSizing: 'border-box' }}
                             />
-                            {!adsData.link.trim() && (
+                            {!adsData.link.trim() && !inheritanceCoversUrl && (
                               <p style={{ fontSize: '11px', color: '#ef4444', marginTop: '4px' }}>
                                 Obrigatório para campanha de {OBJECTIVE_LABEL(activeObjective)}.
                               </p>
@@ -3459,8 +3815,8 @@ ${rows.map(r => `<tr>
                 >
                   <PlayCircle size={17} />
                   {createAsDraft
-                    ? `Salvar Rascunho${mediaFiles.length > 0 ? ` (${mediaFiles.length})` : ''}`
-                    : `Publicar ${mediaFiles.length > 0 ? `${mediaFiles.length} ad${mediaFiles.length > 1 ? 's' : ''}` : 'Lote'} na Meta`
+                    ? `Salvar Rascunho${adUnits.length > 0 ? ` (${adUnits.length})` : ''}`
+                    : `Publicar ${adUnits.length > 0 ? `${adUnits.length} ad${adUnits.length > 1 ? 's' : ''}` : 'Lote'} na Meta`
                   }
                 </button>
               </div>
