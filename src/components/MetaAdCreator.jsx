@@ -31,6 +31,22 @@ import {
   mediaLibraryName,
   pickInheritedCopy,
 } from '../lib/metaCreativeHelpers';
+
+const ADVERTISER_MEMORY_KEY = 'meta_verified_advertiser_by_account';
+const advertiserMemoryKey = (adAccountId) => String(adAccountId || '').replace(/^act_/, '').trim();
+function readRememberedAdvertiser(adAccountId) {
+  try {
+    const map = JSON.parse(localStorage.getItem(ADVERTISER_MEMORY_KEY) || '{}');
+    return map[advertiserMemoryKey(adAccountId)] || '';
+  } catch { return ''; }
+}
+function rememberAdvertiser(adAccountId, advertiserId) {
+  try {
+    const map = JSON.parse(localStorage.getItem(ADVERTISER_MEMORY_KEY) || '{}');
+    map[advertiserMemoryKey(adAccountId)] = String(advertiserId);
+    localStorage.setItem(ADVERTISER_MEMORY_KEY, JSON.stringify(map));
+  } catch { /* ignora */ }
+}
 // O módulo foi importado do CRM VENZA. Clientes e credenciais serão ligados
 // aos dados reais deste CRM na próxima etapa de integração.
 const CLIENTS = [];
@@ -839,18 +855,19 @@ ${rows.map(r => `<tr>
     }
 
     // O anunciante pagador (compliance_section) é uma declaração regulatória
-    // exigida pela Meta no Brasil. Antes o código preenchia sozinho quando não
-    // achava o valor real — isso é declarar um pagador que pode estar errado.
-    // Agora só sugerimos o ID da conta; publicar exige a confirmação explícita
-    // do operador logo abaixo do campo.
-    const suggestedAdvertiserId = String(adAccountId).replace(/^act_/, '').trim();
-    if (!accountData.advertiserAccountId && suggestedAdvertiserId) {
-      setAccountData(current => ({ ...current, advertiserAccountId: suggestedAdvertiserId }));
-      setAdvertiserAutoFallback(true);
-      setAdvertiserConfirmed(false);
-    } else {
-      setAdvertiserAutoFallback(false);
+    // exigida pela Meta. Ele precisa ser um anunciante VERIFICADO; o ID da conta
+    // de anúncios não serve e a Meta recusa (subcode 3858634). Por isso o sistema
+    // não sugere mais o ID da conta: só reaproveita o ID que já foi aceito pela
+    // Meta nesta conta de anúncios, guardado neste navegador após a publicação.
+    const accountOwnId = String(adAccountId).replace(/^act_/, '').trim();
+    const remembered = readRememberedAdvertiser(adAccountId);
+    const current = accountData.advertiserAccountId;
+    if (!current || current === accountOwnId) {
+      // Também limpa o valor antigo que o sistema preencheu sozinho com o ID da conta.
+      setAccountData(prev => ({ ...prev, advertiserAccountId: remembered }));
     }
+    setAdvertiserAutoFallback(false);
+    setAdvertiserConfirmed(true);
 
     if (!bmId || bmId === '__direct__') {
       setAdvertisers([]);
@@ -1485,7 +1502,7 @@ ${rows.map(r => `<tr>
     }
     const effectiveAdvertiserIdCheck = accountData.advertiserAccountId || adSetData.advertiserAccountId;
     if (!effectiveAdvertiserIdCheck) {
-      setError('Selecione o anunciante que paga por estes anúncios. A Meta exige essa identificação e ela não pode ser preenchida por suposição.');
+      setError('Informe o ID do anunciante VERIFICADO que paga por estes anúncios (Business Manager → Configurações → Informações do Anunciante). O ID da conta de anúncios não é aceito pela Meta.');
       setActiveTab(0);
       return;
     }
@@ -1759,6 +1776,7 @@ ${rows.map(r => `<tr>
           payment_advertiser: { advertiser_id: effectiveAdvertiserId },
         });
         pushLog(`Anunciante pagador declarado: ${effectiveAdvertiserId}`, 'success');
+        const advertiserToRemember = effectiveAdvertiserId;
 
         if (effectiveObjective === 'OUTCOME_SALES') {
           if (adSetData.pixelId) {
@@ -1810,6 +1828,8 @@ ${rows.map(r => `<tr>
         allAdSetIds = [r.id];
         updateLastLog('success');
         pushLog(`Conjunto criado · ID: ${r.id}`, 'success');
+        // A Meta aceitou este anunciante nesta conta: guarda para não pedir de novo.
+        rememberAdvertiser(adAccountId, advertiserToRemember);
         setProgress(25);
       }
 
@@ -2885,10 +2905,7 @@ ${rows.map(r => `<tr>
                                   style={{ padding: '10px 14px', borderRadius: '8px', border: `1px solid ${done ? '#10b981' : 'rgba(245,158,11,0.5)'}`, background: 'transparent', color: 'var(--text-main)', fontSize: '13px', outline: 'none', fontFamily: 'monospace', width: '100%', boxSizing: 'border-box' }}
                                 />
                                 <div style={{ fontSize: '11px', color: 'var(--text-muted)', lineHeight: 1.6 }}>
-                                  {advertiserAutoFallback
-                                    ? <>Sugerimos o ID da conta de anúncios, mas a Meta pode registrar outro anunciante como pagador. Confira em <strong style={{ color: 'var(--text-main)' }}>business.facebook.com → Configurações → Informações do Anunciante</strong>.</>
-                                    : <>Para substituir: <strong style={{ color: 'var(--text-main)' }}>business.facebook.com → Configurações → Informações do Anunciante</strong>.</>
-                                  }
+                                  Cole o ID do anunciante <strong style={{ color: 'var(--text-main)' }}>verificado</strong> (não o ID da conta de anúncios). Veja em <strong style={{ color: 'var(--text-main)' }}>business.facebook.com → Configurações → Informações do Anunciante</strong>. Depois que a Meta aceitar, o sistema lembra o ID desta conta.
                                 </div>
                               </>
                             )}
