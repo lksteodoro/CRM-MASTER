@@ -1668,6 +1668,11 @@ ${rows.map(r => `<tr>
         cta = { type: copy.cta, value: { link: finalUrl } };
       }
 
+      // Campanhas sem destino (Alcance, Reconhecimento…) não têm URL, mas a Meta
+      // exige um link no criativo: usa a própria Página do Facebook.
+      const pageUrl = `https://www.facebook.com/${pageId}`;
+      if (!isMsgDest && !isLeadForm && !finalUrl && cta?.value) cta = { ...cta, value: { link: pageUrl } };
+
       const spec = { page_id: pageId };
       if (igId) spec.instagram_user_id = igId;
 
@@ -1683,7 +1688,7 @@ ${rows.map(r => `<tr>
       } else {
         spec.link_data = {
           image_hash: uploaded.hash,
-          link: (isWhatsApp || isMessenger || isLeadForm) ? `https://www.facebook.com/${pageId}` : finalUrl,
+          link: (isWhatsApp || isMessenger || isLeadForm || !finalUrl) ? pageUrl : finalUrl,
           message: copy.primaryText,
           name: copy.title,
           ...(copy.description ? { description: copy.description } : {}),
