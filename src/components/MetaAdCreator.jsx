@@ -1574,7 +1574,7 @@ ${rows.map(r => `<tr>
     // ── Upload de VÍDEO ──────────────────────────────────────────────────────
     // Enviado em partes direto para a Meta pela Edge Function (o token fica no
     // servidor). Sem passar pelo Storage, que no plano gratuito recusa >50 MB.
-    const uploadVideo = async (file, logPrefix) => {
+    const sendVideo = async (file, logPrefix) => {
       const uploadLogId = `video-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const sizeMb = (file.size / 1024 / 1024).toFixed(1);
       setLogs(prev => [...prev, { id: uploadLogId, msg: `${logPrefix} Enviando o vídeo (${sizeMb} MB)...`, status: 'loading' }]);
@@ -1590,7 +1590,12 @@ ${rows.map(r => `<tr>
         throw caught;
       }
       updateLogById(uploadLogId, 'success');
+      return videoId;
+    };
 
+    // Depois do envio a Meta ainda processa o vídeo (minutos, em vídeos grandes).
+    // Essa espera fica fora da fila de envio para não segurar a vaga de outro vídeo.
+    const processVideo = async (videoId, logPrefix) => {
       const statusLogId = `video-status-${videoId}`;
       setLogs(prev => [...prev, { id: statusLogId, msg: `${logPrefix} Meta processando o vídeo...`, status: 'loading' }]);
       try {
@@ -1885,29 +1890,30 @@ ${rows.map(r => `<tr>
         const logId = `up-${i}`;
         setLogs(prev => [...prev, { id: logId, msg: `${logPrefix} Enviando: ${media.file.name}...`, status: 'loading' }]);
         try {
-          const hash = await fileHash(media.file);
+          // Vídeos nunca são reutilizados do cache (um ID pode continuar consultável
+          // mesmo depois de a Meta marcar o criativo WITH_ISSUES), então nem é
+          // preciso ler o arquivo inteiro para calcular o hash: com vários vídeos
+          // grandes em paralelo isso estourava a memória do navegador.
+          const hash = media.type === 'VIDEO' ? null : await fileHash(media.file);
           const thumbCacheKey = `${hash}_thumb`;
-          // Vídeos nunca são reutilizados do cache: um ID pode continuar
-          // consultável mesmo depois de a Meta marcar o criativo WITH_ISSUES.
-          if (media.type === 'VIDEO' && uploadCache[hash]) {
-            delete uploadCache[hash];
-            delete uploadCache[thumbCacheKey];
-            saveCache();
-          }
-          if (uploadCache[hash]) {
+          if (hash && uploadCache[hash]) {
             const thumbHash = uploadCache[thumbCacheKey] || null;
             updateLogById(logId, 'success');
             pushLog(`${logPrefix} ♻️ Reutilizando (${media.file.name})`, 'success');
             return { uploaded: uploadCache[hash], thumbHash, fileId: media.id };
           }
           const [uploaded, thumbHash] = await Promise.all([
-            sem(() => media.type === 'IMAGE' ? uploadImage(media.file) : uploadVideo(media.file, logPrefix)),
+            media.type === 'IMAGE'
+              ? sem(() => uploadImage(media.file))
+              : sem(() => sendVideo(media.file, logPrefix)).then((videoId) => processVideo(videoId, logPrefix)),
             media.type === 'VIDEO' ? sem(() => captureThumbnail(media.file)) : Promise.resolve(null),
           ]);
           if (media.type === 'VIDEO' && !thumbHash) throw new Error(`Thumbnail do vídeo não pôde ser capturada: ${media.file.name}`);
-          uploadCache[hash] = uploaded;
-          if (thumbHash) uploadCache[thumbCacheKey] = thumbHash;
-          saveCache();
+          if (hash) {
+            uploadCache[hash] = uploaded;
+            if (thumbHash) uploadCache[thumbCacheKey] = thumbHash;
+            saveCache();
+          }
           updateLogById(logId, 'success');
           setProgress(prev => Math.min(prev + Math.round(55 / mediaFiles.length), 80));
           return { uploaded, thumbHash, fileId: media.id };
