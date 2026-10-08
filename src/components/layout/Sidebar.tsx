@@ -35,7 +35,7 @@ interface AdminNavItem {
   to: string;
   icon: typeof LayoutGrid;
   label: string;
-  children?: { to: string; label: string; tool?: AgencyToolKey; emphasis?: boolean }[];
+  children?: { to: string; label: string; tool?: AgencyToolKey; emphasis?: boolean; group?: string }[];
 }
 
 const projectNav: ProjectNavItem[] = [
@@ -61,13 +61,13 @@ const adminNav: AdminNavItem[] = [
     label: 'Disparos',
     children: [
       { to: '/agency/disparo/dashboard', label: 'Dashboard', tool: 'disparo.dashboard' },
-      { to: '/agency/disparo/redirecionador', label: 'Redirecionador', tool: 'disparo.redirects' },
-      { to: '/agency/disparo/templates', label: 'Templates Infobip', tool: 'disparo.templates' },
-      { to: '/agency/disparo/transmissoes', label: 'Transmissões', tool: 'disparo.broadcasts' },
-      { to: '/agency/disparo/solicitar', label: 'Solicitar disparo', tool: 'disparo.request' },
-      { to: '/agency/disparo/demandas', label: 'Demandas', tool: 'disparo.demands' },
-      { to: '/agency/disparo/higienizador', label: 'Higienizador de lista', tool: 'disparo.sanitizer' },
-      { to: '/agency/disparo/relatorio', label: 'Relatório do fornecedor', tool: 'disparo.report' },
+      { to: '/agency/disparo/solicitar', label: 'Solicitar disparo', tool: 'disparo.request', group: 'Pedidos' },
+      { to: '/agency/disparo/demandas', label: 'Demandas', tool: 'disparo.demands', group: 'Pedidos' },
+      { to: '/agency/disparo/transmissoes', label: 'Transmissões', tool: 'disparo.broadcasts', group: 'Envio' },
+      { to: '/agency/disparo/templates', label: 'Templates Infobip', tool: 'disparo.templates', group: 'Envio' },
+      { to: '/agency/disparo/redirecionador', label: 'Redirecionador', tool: 'disparo.redirects', group: 'Envio' },
+      { to: '/agency/disparo/higienizador', label: 'Higienizador de lista', tool: 'disparo.sanitizer', group: 'Listas e relatórios' },
+      { to: '/agency/disparo/relatorio', label: 'Relatório do fornecedor', tool: 'disparo.report', group: 'Listas e relatórios' },
     ],
   },
   {
@@ -76,7 +76,6 @@ const adminNav: AdminNavItem[] = [
     label: 'Ferramentas',
     children: [
       { to: '/agency/ferramentas/meta-ads', label: 'Meta Ads', tool: 'meta_ads' },
-      { to: '/agency/ferramentas/meta-ads?criar=1', label: 'Abrir criador de anúncios', tool: 'meta_ads', emphasis: true },
       { to: '/agency/ferramentas/zpl-pdf', label: 'ZPL para PDF', tool: 'zpl_pdf' },
       { to: '/agency/ferramentas/consumer-success', label: 'Consumer Success', tool: 'consumer_success' },
       { to: '/agency/ferramentas/url-de-teste', label: 'Criador de URL de teste', tool: 'utm_tester' },
@@ -196,9 +195,12 @@ export function Sidebar({ showProjectContext = true }: { showProjectContext?: bo
                   </div>
                   {hasChildren && isOpen && (
                     <div className="ml-4 mt-1 space-y-0.5 border-l border-[#303345] pl-3">
-                      {item.children?.map((child) => (
+                      {item.children?.map((child, index) => (
+                        <div key={child.to}>
+                        {child.group && child.group !== item.children?.[index - 1]?.group && (
+                          <p className="px-2.5 pb-0.5 pt-2 text-[10px] font-semibold uppercase tracking-wide text-[#858b9e]">{child.group}</p>
+                        )}
                         <NavLink
-                          key={child.to}
                           to={child.to}
                           className={({ isActive }) =>
                             clsx(
@@ -214,6 +216,7 @@ export function Sidebar({ showProjectContext = true }: { showProjectContext?: bo
                           {child.emphasis && <WandSparkles size={13} />}
                           <span>{child.label}</span>
                         </NavLink>
+                        </div>
                       ))}
                     </div>
                   )}

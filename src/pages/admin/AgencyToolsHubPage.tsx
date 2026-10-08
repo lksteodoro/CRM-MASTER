@@ -31,7 +31,7 @@ const tones: Record<Tone, { color: string; soft: string }> = {
 };
 
 const toolMeta: Record<AgencyToolKey, { icon: ComponentType<{ size?: number }>; description: string; tone: Tone }> = {
-  meta_ads: { icon: Megaphone, tone: 'brand', description: 'Perfis de publicação, campanhas, URLs e copys dos anúncios ativos.' },
+  meta_ads: { icon: Megaphone, tone: 'brand', description: 'Criar anúncios, ver URLs e copys das campanhas e o resumo diário de leads.' },
   zpl_pdf: { icon: Printer, tone: 'info', description: 'Converte etiquetas ZPL em PDF pronto para imprimir.' },
   consumer_success: { icon: MessagesSquare, tone: 'good', description: 'Inbox dos grupos de WhatsApp e mensagens programadas.' },
   utm_tester: { icon: FlaskConical, tone: 'warn', description: 'Gera o link de teste e o link com UTMs para o anúncio.' },
@@ -44,6 +44,13 @@ const toolMeta: Record<AgencyToolKey, { icon: ComponentType<{ size?: number }>; 
   'disparo.sanitizer': { icon: WandSparkles, tone: 'good', description: 'Limpa, padroniza e divide listas em lotes.' },
   'disparo.report': { icon: FileBarChart, tone: 'warn', description: 'Relatório do fornecedor de disparos.' },
 };
+
+const disparoBlocks: { label: string; keys: AgencyToolKey[] }[] = [
+  { label: 'Visão geral', keys: ['disparo.dashboard'] },
+  { label: 'Pedidos', keys: ['disparo.request', 'disparo.demands'] },
+  { label: 'Envio', keys: ['disparo.broadcasts', 'disparo.templates', 'disparo.redirects'] },
+  { label: 'Listas e relatórios', keys: ['disparo.sanitizer', 'disparo.report'] },
+];
 
 const sections = {
   ferramentas: {
@@ -73,10 +80,21 @@ export function AgencyToolsHubPage({ section }: { section: AgencyHubSection }) {
   const config = sections[section];
   const HeaderIcon = config.icon;
 
-  const groups = agencyToolGroups
+  const allowed = agencyToolGroups
     .filter((group) => group.label === config.group)
-    .map((group) => ({ ...group, tools: group.tools.filter((tool) => canUseAgencyTool(tool.key)) }))
-    .filter((group) => group.tools.length > 0);
+    .flatMap((group) => group.tools)
+    .filter((tool) => canUseAgencyTool(tool.key));
+  const groups =
+    section === 'disparos'
+      ? disparoBlocks
+          .map((block) => ({
+            label: block.label,
+            tools: block.keys.map((key) => allowed.find((tool) => tool.key === key)).filter((tool): tool is NonNullable<typeof tool> => Boolean(tool)),
+          }))
+          .filter((block) => block.tools.length > 0)
+      : allowed.length > 0
+        ? [{ label: '', tools: allowed }]
+        : [];
 
   return (
     <main className="flex flex-col gap-8 p-4 sm:p-6">
@@ -89,7 +107,10 @@ export function AgencyToolsHubPage({ section }: { section: AgencyHubSection }) {
       </header>
 
       {groups.map((group) => (
-        <section key={group.label}>
+        <section key={group.label || section} aria-label={group.label || config.title}>
+          {group.label && (
+            <h2 className="mb-3 text-[11px] font-bold uppercase tracking-wider text-[var(--color-text-faint)]">{group.label}</h2>
+          )}
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {group.tools.map((tool) => {
               const meta = toolMeta[tool.key];
@@ -112,12 +133,20 @@ export function AgencyToolsHubPage({ section }: { section: AgencyHubSection }) {
                   <p className="relative mt-1 text-sm font-semibold text-[var(--color-text)]">{tool.label}</p>
                   <p className="relative mt-2 text-[11px] leading-relaxed text-[var(--color-text-muted)]">{meta.description}</p>
                   {tool.key === 'meta_ads' && (
-                    <Link
-                      to="/agency/ferramentas/meta-ads?criar=1"
-                      className="relative z-20 mt-auto inline-flex w-fit items-center gap-1.5 rounded-lg border border-[var(--color-brand)]/35 bg-[var(--color-brand-soft)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--color-brand)] hover:brightness-125"
-                    >
-                      <Sparkles size={12} /> Abrir criador de anúncios
-                    </Link>
+                    <div className="relative z-20 mt-auto flex flex-wrap gap-2 pt-3">
+                      <Link
+                        to="/agency/ferramentas/meta-ads?criar=1"
+                        className="inline-flex w-fit items-center gap-1.5 rounded-lg border border-[var(--color-brand)]/35 bg-[var(--color-brand-soft)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--color-brand)] hover:brightness-125"
+                      >
+                        <Sparkles size={12} /> Criar anúncio
+                      </Link>
+                      <Link
+                        to="/agency/ferramentas/meta-ads?aba=resumo"
+                        className="inline-flex w-fit items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--color-text-muted)] hover:border-[var(--color-brand)] hover:text-[var(--color-text)]"
+                      >
+                        Resumo diário
+                      </Link>
+                    </div>
                   )}
                 </article>
               );

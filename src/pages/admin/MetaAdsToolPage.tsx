@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
+  CalendarClock,
   CheckCircle2,
   ExternalLink,
+  ListChecks,
   Megaphone,
   ImagePlus,
   Play,
+  Rocket,
   Settings2,
   ShieldCheck,
   Trash2,
@@ -13,9 +16,17 @@ import {
 } from 'lucide-react';
 import MetaAdCreator from '../../components/MetaAdCreator';
 import { MetaCampaignUrls } from '../../components/ads/MetaCampaignUrls';
+import { MetaDailyReportPanel } from '../../components/ads/MetaDailyReportPanel';
 import { listProjects } from '../../services/projects.service';
 import type { ProjectRow } from '../../integrations/supabase/database.types';
 import { ErrorView, LoadingView } from '../../components/ui/StateView';
+
+const META_TABS = [
+  { id: 'publicar', label: 'Publicar', icon: Rocket },
+  { id: 'campanhas', label: 'Campanhas', icon: ListChecks },
+  { id: 'resumo', label: 'Resumo diário', icon: CalendarClock },
+] as const;
+type MetaTabId = (typeof META_TABS)[number]['id'];
 
 const META_PRESETS_STORAGE_KEY = 'meta_account_presets';
 const LEGACY_META_PRESETS_STORAGE_KEY = 'meta_ads_client_presets_v1';
@@ -58,6 +69,23 @@ export function MetaAdsToolPage() {
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [presets, setPresets] = useState<MetaClientPreset[]>([]);
   const [creatorPreset, setCreatorPreset] = useState<MetaClientPreset | null>(null);
+
+  // A aba fica na URL (?aba=campanhas) para poder ser aberta direto por link.
+  const requestedTab = searchParams.get('aba');
+  const tab: MetaTabId = META_TABS.some((item) => item.id === requestedTab) ? (requestedTab as MetaTabId) : 'publicar';
+  // Cada aba só carrega na primeira visita e depois fica montada (escondida),
+  // para não perder o que já foi consultado ao trocar de aba.
+  const [visitedTabs, setVisitedTabs] = useState<Set<MetaTabId>>(() => new Set([tab]));
+  useEffect(() => {
+    setVisitedTabs((current) => (current.has(tab) ? current : new Set(current).add(tab)));
+  }, [tab]);
+
+  function selectTab(next: MetaTabId) {
+    const params = new URLSearchParams(searchParams);
+    if (next === 'publicar') params.delete('aba');
+    else params.set('aba', next);
+    setSearchParams(params, { replace: true });
+  }
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === projectId) ?? null,
@@ -160,33 +188,61 @@ export function MetaAdsToolPage() {
 
   return (
     <main className="mx-auto w-full max-w-[1440px] px-5 py-7 md:px-10 xl:px-14">
-      <section className="overflow-hidden rounded-3xl border border-indigo-400/20 bg-gradient-to-br from-indigo-500/15 via-[var(--color-panel)] to-cyan-500/10 p-6 shadow-[0_22px_60px_-34px_rgba(79,70,229,0.7)]">
-        <div className="flex flex-wrap items-start justify-between gap-5">
-          <div className="max-w-2xl">
-            <span className="flex h-11 w-11 items-center justify-center rounded-2xl border border-indigo-300/25 bg-indigo-500/15 text-indigo-300">
-              <Megaphone size={21} />
-            </span>
-            <p className="mt-4 text-xs font-semibold uppercase tracking-[0.18em] text-indigo-300">Ferramentas da agência</p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight text-[var(--color-text)]">Meta Ads</h1>
-            <p className="mt-2 text-sm leading-6 text-[var(--color-text-muted)]">
-              Centralize a conta, confira campanhas e prepare publicações usando a credencial segura de cada projeto.
+      <header className="flex flex-wrap items-start justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-indigo-300/25 bg-indigo-500/15 text-indigo-300">
+            <Megaphone size={21} />
+          </span>
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-[var(--color-text)]">Meta Ads</h1>
+            <p className="mt-1 max-w-xl text-sm leading-6 text-[var(--color-text-muted)]">
+              Publique anúncios, consulte campanhas e acompanhe o resultado de ontem.
             </p>
           </div>
-          <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-200">
-            <ShieldCheck size={17} /> Credenciais protegidas no servidor
-          </div>
         </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-400/20 bg-emerald-500/10 px-3 py-2 text-[11px] text-emerald-200">
+            <ShieldCheck size={14} /> Credenciais protegidas no servidor
+          </span>
+          <Link to="/agency/configuracoes?aba=apis" className="inline-flex min-h-10 items-center gap-1.5 rounded-xl border border-[var(--color-border)] px-3 py-2 text-xs font-semibold text-[var(--color-text-muted)] hover:border-[var(--color-brand)] hover:text-[var(--color-text)]">
+            <Settings2 size={14} /> APIs e integrações
+          </Link>
+          <button type="button" onClick={() => { setCreatorPreset(null); setCreatorOpen(true); }} className="inline-flex min-h-10 items-center gap-2 rounded-xl bg-[var(--color-brand)] px-4 py-2 text-xs font-semibold text-white transition hover:brightness-110">
+            <Play size={15} /> Criar anúncio
+          </button>
+        </div>
+      </header>
 
-      <div className="mt-8 border-t border-indigo-300/15 pt-8">
+      {notice && <div role="status" className="mt-5 flex items-center gap-2 rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200"><CheckCircle2 size={17} />{notice}</div>}
+
+      <div role="tablist" aria-label="Seções do Meta Ads" className="mt-6 flex gap-1 overflow-x-auto border-b border-[var(--color-border)]">
+        {META_TABS.map((item) => {
+          const active = item.id === tab;
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              role="tab"
+              id={`meta-tab-${item.id}`}
+              aria-selected={active}
+              aria-controls={`meta-panel-${item.id}`}
+              onClick={() => selectTab(item.id)}
+              className={`-mb-px inline-flex min-h-11 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/60 ${active ? 'border-[var(--color-brand)] text-[var(--color-text)]' : 'border-transparent text-[var(--color-text-muted)] hover:text-[var(--color-text)]'}`}
+            >
+              <Icon size={15} /> {item.label}
+            </button>
+          );
+        })}
+      </div>
+
+      <section id="meta-panel-publicar" role="tabpanel" aria-labelledby="meta-tab-publicar" hidden={tab !== 'publicar'} className="mt-6 rounded-3xl border border-[var(--color-border)] bg-[var(--color-panel)] p-6">
+      <div>
         <div className="flex flex-wrap items-end justify-between gap-5">
           <div>
             <span className="flex h-11 w-11 items-center justify-center rounded-2xl border border-cyan-300/15 bg-cyan-400/10 text-cyan-200"><WalletCards size={20} /></span>
-            <h2 className="mt-4 text-2xl font-semibold tracking-tight text-[var(--color-text)]">Perfis de publicação</h2>
+            <h2 className="mt-3 text-lg font-semibold tracking-tight text-[var(--color-text)]">Perfis de publicação</h2>
             <p className="mt-2 max-w-xl text-sm leading-6 text-[var(--color-text-muted)]">Sua biblioteca de clientes. Os perfis são criados dentro do Meta Ad Creator, após configurar os dados reais da conta.</p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Link to="/agency/configuracoes?aba=apis" className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--color-border)] px-3 py-2 text-xs font-semibold text-[var(--color-text-muted)] hover:border-[var(--color-brand)] hover:text-[var(--color-text)]"><Settings2 size={14} /> APIs e integrações</Link>
-            <button type="button" onClick={() => { setCreatorPreset(null); setCreatorOpen(true); }} className="inline-flex items-center gap-2 rounded-xl bg-[#6f8ca3] px-4 py-2.5 text-xs font-semibold text-white transition hover:brightness-110"><Play size={15} /> Abrir criador</button>
           </div>
         </div>
 
@@ -224,9 +280,17 @@ export function MetaAdsToolPage() {
       </div>
       </section>
 
-      <MetaCampaignUrls />
+      {visitedTabs.has('campanhas') && (
+        <section id="meta-panel-campanhas" role="tabpanel" aria-labelledby="meta-tab-campanhas" hidden={tab !== 'campanhas'} className="mt-6">
+          <MetaCampaignUrls />
+        </section>
+      )}
 
-      {notice && <div className="mt-5 flex items-center gap-2 rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200"><CheckCircle2 size={17} />{notice}</div>}
+      {visitedTabs.has('resumo') && (
+        <section id="meta-panel-resumo" role="tabpanel" aria-labelledby="meta-tab-resumo" hidden={tab !== 'resumo'} className="mt-6">
+          <MetaDailyReportPanel />
+        </section>
+      )}
 
       {creatorOpen && selectedProject && (
         <div
