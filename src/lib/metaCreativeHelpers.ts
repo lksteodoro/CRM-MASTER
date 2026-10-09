@@ -129,7 +129,7 @@ export function autoPairMedia(items: PairableMedia[], existing: Record<string, s
 
 // ─── Criativo com Feed + Stories ────────────────────────────────────────────
 
-export type PlacementAsset = { videoId?: string; hash?: string; thumbHash?: string | null };
+export type PlacementAsset = { videoId?: string; hash?: string; thumbHash?: string | null; thumbUrl?: string | null };
 
 export type PlacementCopy = {
   primaryText?: string;
@@ -158,7 +158,11 @@ export function buildPlacementAssetFeedSpec(params: {
   const labelKey = mediaType === 'VIDEO' ? 'video_label' : 'image_label';
   const asset = (item: PlacementAsset, label: string) =>
     mediaType === 'VIDEO'
-      ? { video_id: item.videoId, ...(item.thumbHash ? { thumbnail_hash: item.thumbHash } : {}), adlabels: [{ name: label }] }
+      ? {
+          video_id: item.videoId,
+          ...(item.thumbHash ? { thumbnail_hash: item.thumbHash } : item.thumbUrl ? { thumbnail_url: item.thumbUrl } : {}),
+          adlabels: [{ name: label }],
+        }
       : { hash: item.hash, adlabels: [{ name: label }] };
 
   const text = (value?: string) => (value && value.trim() ? [{ text: value.trim() }] : undefined);

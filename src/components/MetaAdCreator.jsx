@@ -1,7 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
 import { X, UploadCloud, PlayCircle, Loader2, AlertCircle, CheckCircle, Database, Info, ChevronDown, Clock, Download, Trash2, Settings, RotateCcw } from 'lucide-react';
-import ffmpegCoreURL from '@ffmpeg/core?url';
-import ffmpegWasmURL from '@ffmpeg/core/wasm?url';
 import {
   metaGet,
   metaGetAll,
@@ -11,6 +9,7 @@ import {
   metaUploadImage,
   metaUploadVideo,
   waitForVideoReady,
+  metaVideoThumbnailUrl,
   getMetaConnectionState,
   MetaNotConnectedError,
 } from '../lib/metaGraph';
@@ -22,6 +21,7 @@ import {
   validateDestinationUrl,
 } from '../lib/metaCompliance';
 import { META_UTM_TEMPLATE } from '../lib/utmBuilder';
+import { extractVideoFrame, OPTIMIZE_MIN_BYTES, optimizeForUpload, probeVideo } from '../lib/videoConverter';
 import {
   aspectLabel,
   autoPairMedia,
@@ -58,7 +58,18 @@ const normalizeAdAccountId = (value) => {
   const digits = String(value || '').trim().replace(/^act_/i, '').replace(/\D/g, '');
   return digits ? `act_${digits}` : '';
 };
-const MAX_BROWSER_TRANSCODE_BYTES = 750 * 1024 * 1024;
+/** A Meta aceita até 50 anúncios ativos por conjunto. */
+const MAX_MEDIA_FILES = 50;
+const META_MAX_VIDEO_BYTES = 4 * 1024 * 1024 * 1024;
+const VIDEO_EXTENSIONS = ['mp4', 'mov', 'm4v', 'mkv', 'webm', 'avi', 'wmv', 'flv', '3gp', 'mts', 'm2ts', 'mpg', 'mpeg'];
+const isVideoFile = (file) => file.type.startsWith('video/') || VIDEO_EXTENSIONS.includes(file.name.split('.').pop()?.toLowerCase());
+const formatMb = (bytes) => `${(bytes / 1024 / 1024).toFixed(bytes >= 100 * 1024 * 1024 ? 0 : 1)} MB`;
+const blobToDataUrl = (blob) => new Promise((resolve) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(reader.result);
+  reader.onerror = () => resolve(null);
+  reader.readAsDataURL(blob);
+});
 
 /** Largura e altura reais da mídia (para saber se é Feed ou Stories 9:16). */
 const readMediaDimensions = (file, type) => new Promise((resolve) => {
@@ -1165,8 +1176,6 @@ ${rows.map(r => `<tr>
     whatsappWelcomeMsg: 'Olá! Gostaria de mais informações.',
   });
   const [mediaFiles, setMediaFiles] = useState([]);
-  const [conversion, setConversion] = useState({ active: false, fileName: '', progress: 0 });
-  const ffmpegRef = useRef(null);
   const [createAsDraft, setCreateAsDraft] = useState(false);
   const [preserveOriginalMedia, setPreserveOriginalMedia] = useState(true);
   const [forceMessagesDest, setForceMessagesDest] = useState(false);
@@ -1343,105 +1352,43 @@ ${rows.map(r => `<tr>
     }
   };
 
-  const inspectVideoCodec = async (file) => {
-    const sampleSize = Math.min(8 * 1024 * 1024, file.size);
-    const first = await file.slice(0, sampleSize).arrayBuffer();
-    const lastStart = Math.max(sampleSize, file.size - sampleSize);
-    const last = lastStart < file.size ? await file.slice(lastStart).arrayBuffer() : new ArrayBuffer(0);
-    const decoder = new TextDecoder('latin1');
-    const signature = `${decoder.decode(first)}${decoder.decode(last)}`.toLowerCase();
-    const unsupportedTag = ['hvc1', 'hev1', 'av01', 'vp09'].find(tag => signature.includes(tag));
-    if (unsupportedTag) {
-      return { valid: false, reason: `codec incompatível (${unsupportedTag.toUpperCase()}).` };
-    }
-    return { valid: true, h264Detected: signature.includes('avc1') || signature.includes('avc3') };
-  };
-
-  const convertVideoForMeta = async (file) => {
-    if (file.size > MAX_BROWSER_TRANSCODE_BYTES) {
-      throw new Error('o arquivo é maior que 750 MB. Para evitar travamentos, converta-o externamente para MP4 H.264/AAC antes do envio.');
-    }
-
-    setConversion({ active: true, fileName: file.name, progress: 0 });
-    try {
-      if (!ffmpegRef.current) {
-        const [{ FFmpeg }, { fetchFile }] = await Promise.all([
-          import('@ffmpeg/ffmpeg'),
-          import('@ffmpeg/util'),
-        ]);
-        const ffmpeg = new FFmpeg();
-        ffmpeg.on('progress', ({ progress }) => {
-          setConversion(current => current.active ? { ...current, progress: Math.min(99, Math.round(progress * 100)) } : current);
-        });
-        await ffmpeg.load({ coreURL: ffmpegCoreURL, wasmURL: ffmpegWasmURL });
-        ffmpegRef.current = { ffmpeg, fetchFile };
-      }
-
-      const { ffmpeg, fetchFile } = ffmpegRef.current;
-      const baseName = file.name.replace(/\.[^.]+$/, '').replace(/[^a-z0-9_-]+/gi, '_').slice(0, 64) || 'video';
-      const inputName = `${Date.now()}_${baseName}_input`;
-      const outputName = `${Date.now()}_${baseName}_meta.mp4`;
-      await ffmpeg.writeFile(inputName, await fetchFile(file));
-      await ffmpeg.exec([
-        '-i', inputName,
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
-        '-pix_fmt', 'yuv420p', '-r', '30',
-        '-c:a', 'aac', '-b:a', '128k', '-ac', '2',
-        '-movflags', '+faststart', '-y', outputName,
-      ]);
-      const output = await ffmpeg.readFile(outputName);
-      await Promise.allSettled([ffmpeg.deleteFile(inputName), ffmpeg.deleteFile(outputName)]);
-      return new File([output.buffer], `${baseName}_meta.mp4`, { type: 'video/mp4' });
-    } finally {
-      setConversion({ active: false, fileName: '', progress: 0 });
-    }
-  };
-
+  // Vídeo entra do jeito que veio, como a imagem: a Meta aceita MP4, MOV, HEVC e
+  // outros formatos e converte do lado dela. Converter aqui (ffmpeg só na CPU)
+  // levava minutos por vídeo de celular.
   const handleFileUpload = async (e) => {
     const files = Array.from(e.target.files);
     e.target.value = '';
     if (!files.length) return;
-    const remainingSlots = Math.max(0, 20 - mediaFiles.length);
+    const remainingSlots = Math.max(0, MAX_MEDIA_FILES - mediaFiles.length);
     const rejected = [];
     const candidates = files.filter(file => {
-      const extension = file.name.split('.').pop()?.toLowerCase();
-      const isVideo = file.type.startsWith('video/') || ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(extension);
-      if (isVideo && file.size > 4 * 1024 * 1024 * 1024) {
-        rejected.push(`${file.name}: o vídeo ultrapassa o limite de 4 GB.`);
+      if (isVideoFile(file) && file.size > META_MAX_VIDEO_BYTES) {
+        rejected.push(`${file.name}: o vídeo ultrapassa o limite de 4 GB da Meta.`);
         return false;
       }
       return true;
-    }).slice(0, remainingSlots);
-    const allowed = [];
-    for (const originalFile of candidates) {
-      let file = originalFile;
-      const extension = file.name.split('.').pop()?.toLowerCase();
-      const isVideo = file.type.startsWith('video/') || ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(extension);
-      if (isVideo) {
-        try {
-          const codec = await inspectVideoCodec(file);
-          const needsConversion = !codec.valid || !['mp4', 'mov'].includes(extension);
-          if (needsConversion) {
-            file = await convertVideoForMeta(file);
-          }
-        } catch (conversionError) {
-          rejected.push(`${originalFile.name}: ${conversionError.message || 'não foi possível converter o vídeo.'}`);
-          continue;
-        }
-      }
-      allowed.push(file);
+    });
+    if (candidates.length > remainingSlots) {
+      rejected.push(`Limite de ${MAX_MEDIA_FILES} mídias por publicação: ${candidates.length - remainingSlots} arquivo(s) ficaram de fora.`);
     }
+    const allowed = candidates.slice(0, remainingSlots);
     if (rejected.length) setError(rejected.join(' '));
     if (!allowed.length) return;
     const baseMedias = allowed.map((file, idx) => ({
       id: uuidv4(), file,
       preview: URL.createObjectURL(file),
-      type: file.type.startsWith('video/') || ['mp4', 'mov'].includes(file.name.split('.').pop()?.toLowerCase()) ? 'VIDEO' : 'IMAGE',
+      type: isVideoFile(file) ? 'VIDEO' : 'IMAGE',
       index: mediaFiles.length + idx + 1,
       thumbnailBase64: null,
     }));
     // Proporção decide se é Feed ou Stories (9:16) e permite parear as versões.
-    const dimensions = await Promise.all(baseMedias.map(m => readMediaDimensions(m.file, m.type)));
+    // HEVC que o <video> não abre ainda tem as dimensões lidas do cabeçalho.
+    const dimensions = await Promise.all(baseMedias.map(async (m) => {
+      const dims = await readMediaDimensions(m.file, m.type);
+      if (m.type !== 'VIDEO' || (dims.width && dims.height)) return dims;
+      const probe = await probeVideo(m.file).catch(() => null);
+      return probe ? { width: probe.width, height: probe.height } : dims;
+    }));
     const newMedias = baseMedias.map((m, idx) => ({
       ...m,
       width: dimensions[idx].width,
@@ -1456,6 +1403,17 @@ ${rows.map(r => `<tr>
     if (!rejected.length) setError(null);
     // Captura thumbnails em paralelo logo após seleção dos arquivos
     const thumbs = await Promise.all(newMedias.map(m => mediaThumbnailBase64(m).catch(() => null)));
+    // Vídeo que o <video> não abriu (HEVC sem suporte): tira o quadro pelo
+    // WebCodecs, três por vez para não esgotar o decodificador da placa.
+    const missing = newMedias.map((m, i) => (m.type === 'VIDEO' && !thumbs[i] ? i : -1)).filter(i => i >= 0);
+    let cursor = 0;
+    await Promise.all([0, 1, 2].map(async () => {
+      while (cursor < missing.length) {
+        const i = missing[cursor++];
+        const frame = await extractVideoFrame(newMedias[i].file, 0.5, 240);
+        if (frame) thumbs[i] = await blobToDataUrl(frame);
+      }
+    }));
     setMediaFiles(prev => prev.map(m => {
       const i = newMedias.findIndex(nm => nm.id === m.id);
       if (i >= 0 && thumbs[i]) return { ...m, thumbnailBase64: thumbs[i] };
@@ -1552,6 +1510,11 @@ ${rows.map(r => `<tr>
       return (fn) => new Promise((res, rej) => { q.push({ fn, res, rej }); run(); });
     };
     const sem = makeSem(5);
+    // Vídeos têm fila própria: cada um sobe em partes de 5 MB, uma depois da
+    // outra, e com 6 em paralelo a conexão fica ocupada o tempo todo.
+    const videoSem = makeSem(6);
+    // Otimização usa a placa de vídeo, que aceita poucas sessões ao mesmo tempo.
+    const optimizeSem = makeSem(2);
 
     // A espera por limite de requisição acontece dentro do cliente da Graph;
     // aqui só mostramos ao operador o que está acontecendo.
@@ -1577,20 +1540,62 @@ ${rows.map(r => `<tr>
     const sendVideo = async (file, logPrefix) => {
       const uploadLogId = `video-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const sizeMb = (file.size / 1024 / 1024).toFixed(1);
+      const startedAt = Date.now();
       setLogs(prev => [...prev, { id: uploadLogId, msg: `${logPrefix} Enviando o vídeo (${sizeMb} MB)...`, status: 'loading' }]);
+      const onProgress = (fraction) => {
+        const pct = Math.round(fraction * 100);
+        const seconds = (Date.now() - startedAt) / 1000;
+        const speed = seconds > 1 ? ` · ${((file.size * fraction) / 1024 / 1024 / seconds).toFixed(1)} MB/s` : '';
+        setLogs(prev => prev.map(l => l.id === uploadLogId ? { ...l, msg: `${logPrefix} Enviando o vídeo (${sizeMb} MB) — ${pct}%${speed}` } : l));
+      };
 
       let videoId;
       try {
-        videoId = await metaUploadVideo(adAccountId, file, (fraction) => {
-          const pct = Math.round(fraction * 100);
-          setLogs(prev => prev.map(l => l.id === uploadLogId ? { ...l, msg: `${logPrefix} Enviando o vídeo (${sizeMb} MB) — ${pct}%` } : l));
-        });
+        videoId = await metaUploadVideo(adAccountId, file, onProgress);
       } catch (caught) {
-        updateLogById(uploadLogId, 'error');
-        throw caught;
+        // Uma sessão de upload que caiu no meio não se recupera; abre outra uma vez.
+        if (caught instanceof MetaNotConnectedError) {
+          updateLogById(uploadLogId, 'error');
+          throw caught;
+        }
+        setLogs(prev => prev.map(l => l.id === uploadLogId ? { ...l, msg: `${logPrefix} Falha no envio, tentando de novo...` } : l));
+        try {
+          videoId = await metaUploadVideo(adAccountId, file, onProgress);
+        } catch (retryError) {
+          updateLogById(uploadLogId, 'error');
+          throw retryError;
+        }
       }
       updateLogById(uploadLogId, 'success');
       return videoId;
+    };
+
+    // Vídeo pesado (4K, 60 fps, bitrate alto) encolhe pela placa de vídeo antes de
+    // subir, em segundos. Se não compensar ou falhar, sobe o original.
+    const prepareVideo = async (file, logPrefix) => {
+      if (file.size < OPTIMIZE_MIN_BYTES) return file;
+      let logId = null;
+      const result = await optimizeSem(() => optimizeForUpload(file, {
+        onProgress: (fraction) => {
+          const pct = Math.round(fraction * 100);
+          if (!logId) {
+            logId = `video-opt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            setLogs(prev => [...prev, { id: logId, msg: `${logPrefix} Otimizando vídeo pesado (${formatMb(file.size)})...`, status: 'loading' }]);
+          } else {
+            setLogs(prev => prev.map(l => l.id === logId ? { ...l, msg: `${logPrefix} Otimizando vídeo pesado (${formatMb(file.size)}) — ${pct}%` } : l));
+          }
+        },
+      }));
+      if (logId) {
+        setLogs(prev => prev.map(l => l.id === logId ? {
+          ...l,
+          status: 'success',
+          msg: result.optimized
+            ? `${logPrefix} ⚡ Vídeo otimizado: ${formatMb(result.before)} → ${formatMb(result.after)}`
+            : `${logPrefix} Otimização não compensou; enviando o original.`,
+        } : l));
+      }
+      return result.file;
     };
 
     // Depois do envio a Meta ainda processa o vídeo (minutos, em vídeos grandes).
@@ -1609,30 +1614,45 @@ ${rows.map(r => `<tr>
     };
 
     // ── Thumbnail (captura frame 0.5s do vídeo) ──────────────────────────────
-    const captureThumbnail = (file) => new Promise((resolve) => {
+    const captureThumbnail = async (file) => {
       const thumbName = mediaLibraryName(`${file.name.replace(/\.[^.]+$/, '')}_capa.jpg`);
-      const video = document.createElement('video');
-      video.muted = true;
-      video.preload = 'auto';
-      const url = URL.createObjectURL(file);
-      video.src = url;
-      video.onloadeddata = () => { video.currentTime = 0.5; };
-      video.onseeked = async () => {
-        try {
-          const canvas = document.createElement('canvas');
-          canvas.width = video.videoWidth || 1280;
-          canvas.height = video.videoHeight || 720;
-          canvas.getContext('2d').drawImage(video, 0, 0);
+      const fromVideoElement = () => new Promise((resolve) => {
+        const video = document.createElement('video');
+        video.muted = true;
+        video.preload = 'auto';
+        const url = URL.createObjectURL(file);
+        let settled = false;
+        // Sem prazo, um vídeo que o navegador não decodifica deixava a publicação parada.
+        const timer = setTimeout(() => finish(null), 15000);
+        function finish(blob) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
           URL.revokeObjectURL(url);
-          canvas.toBlob(async (blob) => {
-            try {
-              resolve(await metaUploadImage(adAccountId, blob, thumbName));
-            } catch { resolve(null); }
-          }, 'image/jpeg', 0.85);
-        } catch { URL.revokeObjectURL(url); resolve(null); }
-      };
-      video.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
-    });
+          resolve(blob);
+        }
+        video.onloadeddata = () => { video.currentTime = Math.min(0.5, (video.duration || 1) / 2); };
+        video.onseeked = () => {
+          if (!video.videoWidth || !video.videoHeight) { finish(null); return; }
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            canvas.getContext('2d').drawImage(video, 0, 0);
+            canvas.toBlob((blob) => finish(blob), 'image/jpeg', 0.85);
+          } catch { finish(null); }
+        };
+        video.onerror = () => finish(null);
+        video.src = url;
+      });
+      const frame = (await fromVideoElement()) || (await extractVideoFrame(file));
+      if (!frame) return null;
+      try {
+        return await metaUploadImage(adAccountId, frame, thumbName);
+      } catch {
+        return null;
+      }
+    };
 
     // ── Batch item com encoding correto ──────────────────────────────────────
     // CORREÇÃO: body deve ser string URL-encoded manualmente (não URLSearchParams)
@@ -1641,7 +1661,7 @@ ${rows.map(r => `<tr>
     // carregar access_token em nenhum item do lote.
 
     // ── object_story_spec por tipo de mídia ──────────────────────────────────
-    const buildStorySpec = ({ uploaded, thumbHash, isMsgDest, isWhatsApp, isMessenger, isLeadForm, isMultiDest, finalUrl, pageId, igId, copy }) => {
+    const buildStorySpec = ({ uploaded, thumbHash, thumbUrl, isMsgDest, isWhatsApp, isMessenger, isLeadForm, isMultiDest, finalUrl, pageId, igId, copy }) => {
 
       // ── page_welcome_message: obrigatório para Click to WhatsApp direto ───────
       const pageWelcomeMessage = (isWhatsApp && !isMultiDest) ? {
@@ -1687,7 +1707,7 @@ ${rows.map(r => `<tr>
           message: copy.primaryText,
           title: copy.title,
           call_to_action: cta,
-          ...(thumbHash ? { image_hash: thumbHash } : {}),
+          ...(thumbHash ? { image_hash: thumbHash } : thumbUrl ? { image_url: thumbUrl } : {}),
           ...(pageWelcomeMessage ? { page_welcome_message: JSON.stringify(pageWelcomeMessage) } : {}),
         };
       } else {
@@ -1883,7 +1903,7 @@ ${rows.map(r => `<tr>
       // ── 3. Upload de mídias em paralelo ──────────────────────────────────────
       const units = adUnits.map((media, i) => ({ media, story: storyOf(media.id), adName: resolveAdName(adsData.namingPattern, i + 1) }));
       const pairedCount = units.filter(u => u.story).length;
-      pushLog(`Enviando ${mediaFiles.length} mídia(s) em paralelo (máx 5)${pairedCount ? ` · ${pairedCount} anúncio(s) com versão Feed + Stories` : ''}...`);
+      pushLog(`Enviando ${mediaFiles.length} mídia(s) em paralelo (até 6 vídeos ao mesmo tempo)${pairedCount ? ` · ${pairedCount} anúncio(s) com versão Feed + Stories` : ''}...`);
 
       const uploadResults = await Promise.all(mediaFiles.map(async (media, i) => {
         const logPrefix = `[${i + 1}/${mediaFiles.length}]`;
@@ -1905,10 +1925,18 @@ ${rows.map(r => `<tr>
           const [uploaded, thumbHash] = await Promise.all([
             media.type === 'IMAGE'
               ? sem(() => uploadImage(media.file))
-              : sem(() => sendVideo(media.file, logPrefix)).then((videoId) => processVideo(videoId, logPrefix)),
+              : prepareVideo(media.file, logPrefix)
+                .then((file) => videoSem(() => sendVideo(file, logPrefix)))
+                .then((videoId) => processVideo(videoId, logPrefix)),
             media.type === 'VIDEO' ? sem(() => captureThumbnail(media.file)) : Promise.resolve(null),
           ]);
-          if (media.type === 'VIDEO' && !thumbHash) throw new Error(`Thumbnail do vídeo não pôde ser capturada: ${media.file.name}`);
+          // Sem capa própria, usa a que a Meta gerou ao processar o vídeo.
+          let thumbUrl = null;
+          if (media.type === 'VIDEO' && !thumbHash) {
+            thumbUrl = await metaVideoThumbnailUrl(uploaded.id);
+            if (!thumbUrl) throw new Error(`Não foi possível obter a capa do vídeo: ${media.file.name}`);
+            pushLog(`${logPrefix} Capa gerada pela Meta.`, 'success');
+          }
           if (hash) {
             uploadCache[hash] = uploaded;
             if (thumbHash) uploadCache[thumbCacheKey] = thumbHash;
@@ -1916,7 +1944,7 @@ ${rows.map(r => `<tr>
           }
           updateLogById(logId, 'success');
           setProgress(prev => Math.min(prev + Math.round(55 / mediaFiles.length), 80));
-          return { uploaded, thumbHash, fileId: media.id };
+          return { uploaded, thumbHash, thumbUrl, fileId: media.id };
         } catch (e) {
           updateLogById(logId, 'error');
           throw e;
@@ -1980,7 +2008,7 @@ ${rows.map(r => `<tr>
         const igId = adSetData.igId || '';
         let params;
         if (canUsePlacements) {
-          const asset = (up) => ({ videoId: up.uploaded.id, hash: up.uploaded.hash, thumbHash: up.thumbHash });
+          const asset = (up) => ({ videoId: up.uploaded.id, hash: up.uploaded.hash, thumbHash: up.thumbHash, thumbUrl: up.thumbUrl });
           params = {
             object_story_spec: JSON.stringify({ page_id: accountData.pageId, ...(igId ? { instagram_user_id: igId } : {}) }),
             asset_feed_spec: JSON.stringify(buildPlacementAssetFeedSpec({
@@ -1994,7 +2022,7 @@ ${rows.map(r => `<tr>
         } else {
           params = {
             object_story_spec: JSON.stringify(buildStorySpec({
-              uploaded: feedUp.uploaded, thumbHash: feedUp.thumbHash, ...flags,
+              uploaded: feedUp.uploaded, thumbHash: feedUp.thumbHash, thumbUrl: feedUp.thumbUrl, ...flags,
               isMultiDest: target.isMultiDest, finalUrl: perFileFinalUrl, pageId: accountData.pageId,
               igId, copy,
             })),
@@ -3373,15 +3401,6 @@ ${rows.map(r => `<tr>
                   if (mediaFiles.length === 0) return (
                     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '24px' }}>
                       {formatModeControl}
-                      {conversion.active && (
-                        <div style={{ width: '100%', maxWidth: '420px', padding: '12px 14px', borderRadius: '10px', border: '1px solid rgba(47,128,255,0.35)', background: 'rgba(47,128,255,0.08)' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '12px', color: '#93c5fd', fontWeight: '700' }}>
-                            <span>Convertendo para MP4 H.264/AAC</span><span>{conversion.progress}%</span>
-                          </div>
-                          <div style={{ marginTop: '8px', height: '5px', background: 'rgba(255,255,255,0.1)', borderRadius: '5px', overflow: 'hidden' }}><div style={{ width: `${conversion.progress}%`, height: '100%', background: '#2f80ff', transition: 'width 0.2s' }} /></div>
-                          <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{conversion.fileName}</div>
-                        </div>
-                      )}
                       <label style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '16px', cursor: 'pointer', padding: '48px 60px', borderRadius: '20px', border: '2px dashed rgba(16,185,129,0.35)', background: 'rgba(16,185,129,0.04)', transition: 'all 0.2s', width: '100%', maxWidth: '420px', boxSizing: 'border-box' }}
                         onMouseEnter={e => { e.currentTarget.style.borderColor = 'rgba(16,185,129,0.7)'; e.currentTarget.style.background = 'rgba(16,185,129,0.08)'; }}
                         onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(16,185,129,0.35)'; e.currentTarget.style.background = 'rgba(16,185,129,0.04)'; }}
@@ -3392,11 +3411,11 @@ ${rows.map(r => `<tr>
                         </div>
                         <div style={{ textAlign: 'center' }}>
                           <div style={{ fontSize: '18px', fontWeight: '800', color: 'var(--text-main)', marginBottom: '6px' }}>Arraste ou clique para fazer upload</div>
-                          <div style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: 1.5 }}>Imagens JPG/PNG ou vídeos MP4/MOV · até 20 arquivos</div>
+                          <div style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: 1.5 }}>Imagens JPG/PNG ou vídeos em qualquer formato · até 50 arquivos</div>
                         </div>
                       </label>
                       <div style={{ display: 'flex', gap: '24px', alignItems: 'center' }}>
-                        {[['🖼️', 'Imagens', 'JPG, PNG, WEBP'], ['🎬', 'Vídeos', 'H.264 + AAC · 30 fps'], ['📦', 'Lote', 'até 20 de uma vez']].map(([icon, title, sub]) => (
+                        {[['🖼️', 'Imagens', 'JPG, PNG, WEBP'], ['🎬', 'Vídeos', 'MP4, MOV, HEVC · sem converter'], ['📦', 'Lote', 'até 50 de uma vez']].map(([icon, title, sub]) => (
                           <div key={title} style={{ textAlign: 'center' }}>
                             <div style={{ fontSize: '22px', marginBottom: '4px' }}>{icon}</div>
                             <div style={{ fontSize: '12px', fontWeight: '700', color: 'var(--text-main)' }}>{title}</div>
@@ -3493,7 +3512,7 @@ ${rows.map(r => `<tr>
                     {/* Esquerda: area de upload no modo global (quando não individual) */}
                     {!individualCopyMode && (
                     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto', minWidth: 0 }}>
-                      <h3 style={{ fontSize: '17px', fontWeight: '700', color: 'var(--text-main)', flexShrink: 0 }}>Criativos — até 20 mídias</h3>
+                      <h3 style={{ fontSize: '17px', fontWeight: '700', color: 'var(--text-main)', flexShrink: 0 }}>Criativos — até 50 mídias</h3>
                       <div style={{ fontSize: '11px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
                         Envie a versão de <strong style={{ color: '#34d399' }}>Feed</strong> (1:1 ou 4:5) e a de <strong style={{ color: '#c4b5fd' }}>Stories/Reels</strong> (9:16) do mesmo criativo: o sistema junta as duas no mesmo anúncio e a Meta mostra cada uma no lugar certo. O pareamento é automático pelo nome do arquivo — confira abaixo.
                       </div>

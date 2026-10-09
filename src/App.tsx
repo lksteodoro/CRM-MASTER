@@ -41,6 +41,7 @@ import { AgencyToolsHubPage } from './pages/admin/AgencyToolsHubPage';
 import { ZplPdfToolPage } from './pages/admin/ZplPdfToolPage';
 import { ConsumerSuccessPage } from './pages/admin/ConsumerSuccessPage';
 import { UtmTesterPage } from './pages/admin/UtmTesterPage';
+import { VideoConverterPage } from './pages/admin/VideoConverterPage';
 import { AgencySettingsPage } from './pages/admin/AgencySettingsPage';
 import { ClientDisparoPortalPage } from './pages/client/ClientDisparoPortalPage';
 
@@ -82,6 +83,7 @@ function App() {
             <Route element={<AgencyToolRoute tool="zpl_pdf" />}><Route element={<AdminShell />}><Route path="/agency/ferramentas/zpl-pdf" element={<ZplPdfToolPage />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="consumer_success" />}><Route element={<AdminShell />}><Route path="/agency/ferramentas/consumer-success" element={<ConsumerSuccessPage />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="utm_tester" />}><Route element={<AdminShell />}><Route path="/agency/ferramentas/url-de-teste" element={<UtmTesterPage />} /></Route></Route>
+            <Route element={<AgencyToolRoute tool="video_converter" />}><Route element={<AdminShell />}><Route path="/agency/ferramentas/conversor-de-video" element={<VideoConverterPage />} /></Route></Route>
 
             {/* Projeto — o id na URL é a fonte de verdade */}
             <Route path="/project/:projectId" element={<ProjectLayout />}>

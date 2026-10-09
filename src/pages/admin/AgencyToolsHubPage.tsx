@@ -5,6 +5,7 @@ import {
   ClipboardList,
   FileBarChart,
   FileCode2,
+  Film,
   FlaskConical,
   LayoutDashboard,
   Link2,
@@ -20,7 +21,7 @@ import {
 import { useAuth } from '../../providers/AuthProvider';
 import { agencyToolGroups, type AgencyToolKey } from '../../services/agencyTools.service';
 
-type Tone = 'brand' | 'info' | 'good' | 'warn' | 'bad';
+type Tone = 'brand' | 'info' | 'good' | 'warn' | 'bad' | 'violet';
 
 const tones: Record<Tone, { color: string; soft: string }> = {
   brand: { color: 'var(--color-brand)', soft: 'var(--color-brand-soft)' },
@@ -28,12 +29,14 @@ const tones: Record<Tone, { color: string; soft: string }> = {
   good: { color: 'var(--color-good)', soft: 'var(--color-good-soft)' },
   warn: { color: 'var(--color-warn)', soft: 'var(--color-warn-soft)' },
   bad: { color: 'var(--color-bad)', soft: 'var(--color-bad-soft)' },
+  violet: { color: 'var(--color-violet)', soft: 'var(--color-violet-soft)' },
 };
 
 const toolMeta: Record<AgencyToolKey, { icon: ComponentType<{ size?: number }>; description: string; tone: Tone }> = {
   meta_ads: { icon: Megaphone, tone: 'brand', description: 'Criar anúncios, ver URLs e copys das campanhas e o resumo diário de leads.' },
   zpl_pdf: { icon: Printer, tone: 'info', description: 'Converte etiquetas ZPL em PDF pronto para imprimir.' },
   consumer_success: { icon: MessagesSquare, tone: 'good', description: 'Inbox dos grupos de WhatsApp e mensagens programadas.' },
+  video_converter: { icon: Film, tone: 'violet', description: 'Converte vídeos em massa para MP4 H.264/AAC, leves e prontos para o anúncio.' },
   utm_tester: { icon: FlaskConical, tone: 'warn', description: 'Gera o link de teste e o link com UTMs para o anúncio.' },
   'disparo.dashboard': { icon: LayoutDashboard, tone: 'brand', description: 'Visão geral dos disparos e dos resultados.' },
   'disparo.redirects': { icon: Link2, tone: 'info', description: 'Links por cliente, randomizador e analytics de cliques.' },

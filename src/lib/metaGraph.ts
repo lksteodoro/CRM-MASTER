@@ -56,11 +56,31 @@ function throwGraphError(error: GraphError, prefix?: string): never {
 
 type InvokeOptions = { retries?: number; onRateLimit?: (seconds: number, code: number) => void };
 
+/** Criar campanha, conjunto ou anúncio duas vezes duplicaria; só estas operações não se repetem sozinhas. */
+const NON_REPEATABLE_OPS = new Set(['post', 'batch']);
+
+/** Queda de rede ou servidor sobrecarregado (502/503/504/546): passa sozinho em segundos. */
+function isTransientFailure(error: unknown) {
+  const name = (error as { name?: string })?.name;
+  if (name === 'FunctionsFetchError' || name === 'FunctionsRelayError') return true;
+  const status = Number((error as { context?: { status?: number } })?.context?.status);
+  return status >= 500;
+}
+
 async function invoke<T = any>(payload: Record<string, unknown> | FormData, options: InvokeOptions = {}): Promise<T> {
   const retries = options.retries ?? 4;
+  const op = String(payload instanceof FormData ? payload.get('op') : payload.op);
+  let networkRetries = NON_REPEATABLE_OPS.has(op) ? 0 : 3;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     const { data, error } = await supabase.functions.invoke<any>('meta-proxy', { body: payload });
+
+    if (error && isTransientFailure(error) && networkRetries > 0) {
+      networkRetries -= 1;
+      attempt -= 1;
+      await new Promise((resolve) => setTimeout(resolve, 2000 * (3 - networkRetries)));
+      continue;
+    }
 
     if (error) {
       // O corpo do erro carrega a razão real (409 de conexão ausente, 403 de
@@ -314,34 +334,123 @@ export async function metaUploadVideo(
   return videoId;
 }
 
-/** Espera a Meta terminar de processar o vídeo antes de criar o criativo. */
-export async function waitForVideoReady(
-  videoId: string,
-  { timeoutMs = 10 * 60 * 1000, onTick }: { timeoutMs?: number; onTick?: () => void } = {},
-): Promise<void> {
-  const startedAt = Date.now();
+// ── Espera do processamento dos vídeos ────────────────────────────────────────
+// Uma única consulta a cada 5 s cobre todos os vídeos em processamento. Com 20+
+// vídeos, consultar um a um batia no limite de requisições da conta.
 
-  while (Date.now() - startedAt < timeoutMs) {
-    const payload = await metaGet<any>(videoId, { fields: 'status' });
-    if (payload?.error) throwGraphError(payload.error, 'Status do vídeo:');
+type PendingVideo = { resolve: () => void; reject: (error: unknown) => void; deadline: number; onTick?: () => void };
+const pendingVideos = new Map<string, PendingVideo>();
+let pollTimer: ReturnType<typeof setTimeout> | null = null;
+let batchStatusSupported = true;
 
-    const status = payload?.status ?? {};
-    const videoStatus = String(status.video_status ?? '').toLowerCase();
-    const processingStatus = String(status.processing_phase?.status ?? '').toLowerCase();
-
-    if (['error', 'failed'].includes(videoStatus) || ['error', 'failed'].includes(processingStatus)) {
-      const details = status.processing_phase?.errors ?? status.error_description ?? status;
-      throw new MetaApiError(`A Meta rejeitou o vídeo: ${JSON.stringify(details)}`);
-    }
-    // processing_phase=complete sozinho não basta: o SDK oficial só libera o
-    // vídeo para o criativo quando video_status vira "ready".
-    if (videoStatus === 'ready') return;
-
-    onTick?.();
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+/** `true` quando pronto, um erro quando a Meta recusou, `false` enquanto processa. */
+function readVideoStatus(status: any): true | false | MetaApiError {
+  const videoStatus = String(status?.video_status ?? '').toLowerCase();
+  const processingStatus = String(status?.processing_phase?.status ?? '').toLowerCase();
+  if (['error', 'failed'].includes(videoStatus) || ['error', 'failed'].includes(processingStatus)) {
+    const details = status?.processing_phase?.errors ?? status?.error_description ?? status;
+    return new MetaApiError(`A Meta rejeitou o vídeo: ${JSON.stringify(details)}`);
   }
+  // processing_phase=complete sozinho não basta: o SDK oficial só libera o
+  // vídeo para o criativo quando video_status vira "ready".
+  return videoStatus === 'ready';
+}
 
-  throw new MetaApiError('A Meta não terminou de processar o vídeo em 10 minutos. Tente novamente.');
+async function fetchVideoStatuses(ids: string[]): Promise<Record<string, any>> {
+  const statuses: Record<string, any> = {};
+  if (batchStatusSupported) {
+    try {
+      for (let index = 0; index < ids.length; index += 50) {
+        const payload = await invoke<any>({ op: 'video_status', ids: ids.slice(index, index + 50) });
+        if (payload?.error) throwGraphError(payload.error, 'Status do vídeo:');
+        for (const [id, node] of Object.entries(payload ?? {})) statuses[id] = (node as any)?.status;
+      }
+      return statuses;
+    } catch (caught) {
+      if (caught instanceof MetaProxyOutdatedError) batchStatusSupported = false;
+      else if (!(caught instanceof MetaApiError) || RATE_LIMIT_CODES.has(caught.code ?? -1)) throw caught;
+      // Erro da Meta no lote inteiro: consulta um a um para isolar o vídeo com problema.
+    }
+  }
+  for (const id of ids) {
+    const payload = await metaGet<any>(id, { fields: 'status' });
+    if (payload?.error) {
+      statuses[id] = { video_status: 'error', error_description: payload.error.message };
+      continue;
+    }
+    statuses[id] = payload?.status;
+  }
+  return statuses;
+}
+
+// `pollTimer` fica preenchido também durante a consulta, para que um vídeo que
+// entra na espera nesse meio-tempo não abra um segundo ciclo em paralelo.
+async function pollPendingVideos() {
+  const ids = [...pendingVideos.keys()];
+  if (ids.length === 0) {
+    pollTimer = null;
+    return;
+  }
+  try {
+    const statuses = await fetchVideoStatuses(ids);
+    for (const id of ids) {
+      const waiter = pendingVideos.get(id);
+      if (!waiter) continue;
+      const result = readVideoStatus(statuses[id]);
+      if (result === true) {
+        pendingVideos.delete(id);
+        waiter.resolve();
+      } else if (result instanceof MetaApiError) {
+        pendingVideos.delete(id);
+        waiter.reject(result);
+      } else {
+        waiter.onTick?.();
+      }
+    }
+  } catch (caught) {
+    // Credencial perdida não melhora esperando; queda de rede, sim.
+    if (caught instanceof MetaNotConnectedError) {
+      for (const [id, waiter] of pendingVideos) {
+        pendingVideos.delete(id);
+        waiter.reject(caught);
+      }
+    }
+  }
+  const now = Date.now();
+  for (const [id, waiter] of pendingVideos) {
+    if (now > waiter.deadline) {
+      pendingVideos.delete(id);
+      waiter.reject(new MetaApiError('A Meta não terminou de processar o vídeo em 20 minutos. Tente novamente.'));
+    }
+  }
+  pollTimer = pendingVideos.size > 0 ? setTimeout(() => void pollPendingVideos(), 5000) : null;
+}
+
+/** Espera a Meta terminar de processar o vídeo antes de criar o criativo. */
+export function waitForVideoReady(
+  videoId: string,
+  { timeoutMs = 20 * 60 * 1000, onTick }: { timeoutMs?: number; onTick?: () => void } = {},
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    pendingVideos.set(videoId, { resolve, reject, deadline: Date.now() + timeoutMs, onTick });
+    pollTimer ??= setTimeout(() => void pollPendingVideos(), 3000);
+  });
+}
+
+/**
+ * Capa gerada pela própria Meta, para quando o navegador não consegue tirar um
+ * quadro do vídeo (HEVC em placa sem suporte, por exemplo).
+ */
+export async function metaVideoThumbnailUrl(videoId: string): Promise<string | null> {
+  try {
+    const rows = await metaGetAll<{ uri?: string; is_preferred?: boolean }>(`${videoId}/thumbnails`, { fields: 'uri,is_preferred' }, { maxPages: 1 });
+    const chosen = rows.find((row) => row.is_preferred && row.uri) ?? rows.find((row) => row.uri);
+    if (chosen?.uri) return chosen.uri;
+  } catch {
+    // Proxy antigo sem o caminho de capas: tenta o campo `picture` do vídeo.
+  }
+  const payload = await metaGet<any>(videoId, { fields: 'picture' }).catch(() => null);
+  return typeof payload?.picture === 'string' ? payload.picture : null;
 }
 
 export type MetaConnectionState = {

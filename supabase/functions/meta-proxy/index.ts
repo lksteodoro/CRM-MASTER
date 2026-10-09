@@ -34,7 +34,7 @@ const READ_PATHS: RegExp[] = [
   /^act_\d+$/,
   /^act_\d+\/(campaigns|adsets|ads|adspixels|advertisers|customconversions)$/,
   /^\d+$/, // nó individual (campanha, conjunto, vídeo) consultado por id
-  /^\d+\/(adsets|ads|advertisers|leadgen_forms)$/,
+  /^\d+\/(adsets|ads|advertisers|leadgen_forms|thumbnails)$/,
   /^act_\d+\/insights$/,
   /^\d+\/insights$/,
 ];
@@ -61,6 +61,29 @@ async function appsecretProof(token: string, secret: string) {
   );
   const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(token));
   return Array.from(new Uint8Array(signature)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// ── Cache da autorização ──────────────────────────────────────────────────────
+// Um vídeo sobe em dezenas de partes de 5 MB, e cada parte é uma chamada. Refazer
+// login, perfil, permissão, conexão e leitura da credencial em todas custava
+// ~0,7 s por parte. A instância da função fica viva entre chamadas seguidas, então
+// guarda o resultado por 60 s (nunca além da validade do JWT do usuário).
+type AuthContext = { userId: string; connectionId: string; token: string; proof: string | null };
+const AUTH_CACHE_MS = 60_000;
+const authCache = new Map<string, { expiresAt: number; context: AuthContext }>();
+
+function jwtExpiresAt(authHeader: string) {
+  try {
+    const part = authHeader.replace(/^Bearer\s+/i, '').split('.')[1] ?? '';
+    const payload = JSON.parse(atob(part.replace(/-/g, '+').replace(/_/g, '/')));
+    return Number(payload.exp) * 1000 || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function forgetConnection(connectionId: string) {
+  for (const [key, entry] of authCache) if (entry.context.connectionId === connectionId) authCache.delete(key);
 }
 
 Deno.serve(async (request) => {
@@ -94,51 +117,77 @@ Deno.serve(async (request) => {
     return json({ error: 'invalid_json' }, 400);
   }
 
-  const caller = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: authHeader } } });
-  const { data: userData } = await caller.auth.getUser();
-  const user = userData.user;
-  if (!user) return json({ error: 'unauthorized' }, 401);
-
-  const { data: profile } = await caller
-    .from('profiles')
-    .select('organization_id, role')
-    .eq('id', user.id)
-    .maybeSingle();
-  if (!profile?.organization_id) return json({ error: 'forbidden' }, 403);
-
-  // Não-admin precisa da ferramenta liberada explicitamente (migration 0039).
-  if (profile.role !== 'ADMIN') {
-    const { data: permission } = await caller
-      .from('agency_tool_permissions')
-      .select('tool_key')
-      .eq('user_id', user.id)
-      .eq('tool_key', 'meta_ads')
-      .maybeSingle();
-    if (!permission) return json({ error: 'forbidden' }, 403);
-  }
-
   const admin = createClient(supabaseUrl, serviceKey);
-
-  const { data: connection } = await admin
-    .from('meta_oauth_connections')
-    .select('id, status, expires_at')
-    .eq('organization_id', profile.organization_id)
-    .maybeSingle();
-  if (!connection || connection.status !== 'CONNECTED') {
-    return json({ error: 'meta_not_connected', message: 'Conecte a agência à Meta em Configurações › APIs.' }, 409);
-  }
-  if (connection.expires_at && new Date(connection.expires_at).getTime() < Date.now()) {
-    await admin.from('meta_oauth_connections')
-      .update({ status: 'ERROR', last_error: 'Credencial expirada. Reconecte a agência à Meta.' })
-      .eq('id', connection.id);
-    return json({ error: 'meta_token_expired', message: 'A credencial da Meta expirou. Reconecte em Configurações › APIs.' }, 409);
+  const now = Date.now();
+  let cached = authCache.get(authHeader);
+  if (cached && cached.expiresAt <= now) {
+    authCache.delete(authHeader);
+    cached = undefined;
   }
 
-  const { data: storedToken } = await admin.rpc('meta_oauth_secret_get', { p_connection_id: connection.id });
-  const token = (storedToken ?? undefined) as string | undefined;
-  if (!token) return json({ error: 'meta_not_connected', message: 'Credencial da Meta ausente. Reconecte a agência.' }, 409);
+  let context: AuthContext;
+  if (cached) {
+    context = cached.context;
+  } else {
+    const caller = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: authHeader } } });
+    const { data: userData } = await caller.auth.getUser();
+    const user = userData.user;
+    if (!user) return json({ error: 'unauthorized' }, 401);
 
-  const proof = appSecret ? await appsecretProof(token, appSecret) : null;
+    const { data: profile } = await caller
+      .from('profiles')
+      .select('organization_id, role')
+      .eq('id', user.id)
+      .maybeSingle();
+    if (!profile?.organization_id) return json({ error: 'forbidden' }, 403);
+
+    // Não-admin precisa da ferramenta liberada explicitamente (migration 0039).
+    if (profile.role !== 'ADMIN') {
+      const { data: permission } = await caller
+        .from('agency_tool_permissions')
+        .select('tool_key')
+        .eq('user_id', user.id)
+        .eq('tool_key', 'meta_ads')
+        .maybeSingle();
+      if (!permission) return json({ error: 'forbidden' }, 403);
+    }
+
+    const { data: connection } = await admin
+      .from('meta_oauth_connections')
+      .select('id, status, expires_at')
+      .eq('organization_id', profile.organization_id)
+      .maybeSingle();
+    if (!connection || connection.status !== 'CONNECTED') {
+      return json({ error: 'meta_not_connected', message: 'Conecte a agência à Meta em Configurações › APIs.' }, 409);
+    }
+    if (connection.expires_at && new Date(connection.expires_at).getTime() < now) {
+      await admin.from('meta_oauth_connections')
+        .update({ status: 'ERROR', last_error: 'Credencial expirada. Reconecte a agência à Meta.' })
+        .eq('id', connection.id);
+      return json({ error: 'meta_token_expired', message: 'A credencial da Meta expirou. Reconecte em Configurações › APIs.' }, 409);
+    }
+
+    const { data: storedToken } = await admin.rpc('meta_oauth_secret_get', { p_connection_id: connection.id });
+    const storedTokenValue = (storedToken ?? undefined) as string | undefined;
+    if (!storedTokenValue) return json({ error: 'meta_not_connected', message: 'Credencial da Meta ausente. Reconecte a agência.' }, 409);
+
+    context = {
+      userId: user.id,
+      connectionId: connection.id,
+      token: storedTokenValue,
+      proof: appSecret ? await appsecretProof(storedTokenValue, appSecret) : null,
+    };
+    const connectionExpiry = connection.expires_at ? new Date(connection.expires_at).getTime() : Infinity;
+    const expiresAt = Math.min(now + AUTH_CACHE_MS, jwtExpiresAt(authHeader) || now, connectionExpiry);
+    if (expiresAt > now) {
+      if (authCache.size > 500) authCache.clear();
+      authCache.set(authHeader, { expiresAt, context });
+    }
+  }
+
+  const user = { id: context.userId };
+  const connection = { id: context.connectionId };
+  const { token, proof } = context;
   const auth = () => {
     const params = new URLSearchParams({ access_token: token });
     if (proof) params.set('appsecret_proof', proof);
@@ -150,6 +199,7 @@ Deno.serve(async (request) => {
   // soltas em cada publicação.
   const noteAuthFailure = async (payload: { error?: { code?: number; message?: string } }) => {
     if (payload?.error?.code === 190) {
+      forgetConnection(connection.id);
       await admin.from('meta_oauth_connections')
         .update({ status: 'ERROR', last_error: payload.error.message ?? 'Credencial revogada pela Meta.' })
         .eq('id', connection.id);
@@ -171,6 +221,21 @@ Deno.serve(async (request) => {
       }
       const response = await fetch(`${GRAPH}/${path}?${params}`);
       return json(await noteAuthFailure(await response.json()), response.ok ? 200 : 200);
+    }
+
+    // ── Status de vários vídeos de uma vez ──────────────────────────────────────
+    // O criador espera dezenas de vídeos processarem; uma consulta por ciclo em
+    // vez de uma por vídeo mantém a conta longe do limite de requisições.
+    if (op === 'video_status') {
+      const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
+      if (ids.length === 0 || ids.length > 50 || ids.some((id) => !/^\d+$/.test(id))) {
+        return json({ error: 'invalid_ids' }, 400);
+      }
+      const params = auth();
+      params.set('ids', ids.join(','));
+      params.set('fields', 'status');
+      const response = await fetch(`${GRAPH}/?${params}`);
+      return json(await noteAuthFailure(await response.json()));
     }
 
     // ── Paginação ───────────────────────────────────────────────────────────
@@ -332,6 +397,7 @@ Deno.serve(async (request) => {
         status: info.is_valid ? 'CONNECTED' : 'REVOKED',
         last_error: info.is_valid ? null : 'Credencial inválida segundo a Meta. Reconecte a agência.',
       }).eq('id', connection.id);
+      forgetConnection(connection.id);
       return json({ valid: !!info.is_valid, scopes, expires_at: expiresAt });
     }
 
