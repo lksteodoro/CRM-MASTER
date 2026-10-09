@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { X, UploadCloud, PlayCircle, Loader2, AlertCircle, CheckCircle, Database, Info, ChevronDown, Clock, Download, Trash2, Settings, RotateCcw } from 'lucide-react';
+import { X, UploadCloud, PlayCircle, Loader2, AlertCircle, CheckCircle, Database, Info, ChevronDown, ChevronLeft, ChevronRight, Clock, Download, Trash2, Settings, RotateCcw, Plus, FolderOpen, ArrowLeftRight, Unlink, Pencil, ShieldCheck } from 'lucide-react';
 import {
   metaGet,
   metaGetAll,
@@ -25,28 +25,18 @@ import { extractVideoFrame, OPTIMIZE_MIN_BYTES, optimizeForUpload, probeVideo } 
 import {
   aspectLabel,
   autoPairMedia,
+  brazilRegulationParams,
   buildPlacementAssetFeedSpec,
+  buildTextOptionsAssetFeedSpec,
   classifyAdSetDestination,
   detectPlacementFormat,
+  hasTextVariations,
+  MAX_TEXT_OPTIONS,
   mediaLibraryName,
+  pickBrazilIdentities,
   pickInheritedCopy,
+  textOptions,
 } from '../lib/metaCreativeHelpers';
-
-const ADVERTISER_MEMORY_KEY = 'meta_verified_advertiser_by_account';
-const advertiserMemoryKey = (adAccountId) => String(adAccountId || '').replace(/^act_/, '').trim();
-function readRememberedAdvertiser(adAccountId) {
-  try {
-    const map = JSON.parse(localStorage.getItem(ADVERTISER_MEMORY_KEY) || '{}');
-    return map[advertiserMemoryKey(adAccountId)] || '';
-  } catch { return ''; }
-}
-function rememberAdvertiser(adAccountId, advertiserId) {
-  try {
-    const map = JSON.parse(localStorage.getItem(ADVERTISER_MEMORY_KEY) || '{}');
-    map[advertiserMemoryKey(adAccountId)] = String(advertiserId);
-    localStorage.setItem(ADVERTISER_MEMORY_KEY, JSON.stringify(map));
-  } catch { /* ignora */ }
-}
 // O módulo foi importado do CRM VENZA. Clientes e credenciais serão ligados
 // aos dados reais deste CRM na próxima etapa de integração.
 const CLIENTS = [];
@@ -58,11 +48,23 @@ const normalizeAdAccountId = (value) => {
   const digits = String(value || '').trim().replace(/^act_/i, '').replace(/\D/g, '');
   return digits ? `act_${digits}` : '';
 };
-/** A Meta aceita até 50 anúncios ativos por conjunto. */
-const MAX_MEDIA_FILES = 50;
+/** A Meta aceita até 50 anúncios por conjunto; com Feed + Stories são 2 arquivos por anúncio. */
+const MAX_ADS_PER_BATCH = 50;
+const MAX_MEDIA_FILES = MAX_ADS_PER_BATCH * 2;
 const META_MAX_VIDEO_BYTES = 4 * 1024 * 1024 * 1024;
 const VIDEO_EXTENSIONS = ['mp4', 'mov', 'm4v', 'mkv', 'webm', 'avi', 'wmv', 'flv', '3gp', 'mts', 'm2ts', 'mpg', 'mpeg'];
-const isVideoFile = (file) => file.type.startsWith('video/') || VIDEO_EXTENSIONS.includes(file.name.split('.').pop()?.toLowerCase());
+const IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp'];
+const fileExtension = (file) => file.name.split('.').pop()?.toLowerCase();
+const isVideoFile = (file) => file.type.startsWith('video/') || VIDEO_EXTENSIONS.includes(fileExtension(file));
+const isImageFile = (file) => ['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || IMAGE_EXTENSIONS.includes(fileExtension(file));
+const byFileName = (a, b) => a.name.localeCompare(b.name, 'pt-BR', { numeric: true, sensitivity: 'base' });
+/** Tamanho que a Meta recomenda (passar disso corta o texto com "Ver mais"). */
+const TEXT_LIMITS = { primaryText: 125, title: 40, description: 30 };
+const EMPTY_VARIATIONS = { primaryText: [], title: [], description: [] };
+const OPTION_KEYS = { primaryText: 'primaryTexts', title: 'titles', description: 'descriptions' };
+// Referência estável: rola o elemento para a vista só quando ele aparece.
+const revealOnMount = (element) => element?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+const variationsOf = (adsData) => ({ ...EMPTY_VARIATIONS, ...(adsData?.variations || {}) });
 const formatMb = (bytes) => `${(bytes / 1024 / 1024).toFixed(bytes >= 100 * 1024 * 1024 ? 0 : 1)} MB`;
 const blobToDataUrl = (blob) => new Promise((resolve) => {
   const reader = new FileReader();
@@ -323,6 +325,48 @@ const SelectField = ({ label, value, onChange, required, highlight, options, ite
   </div>
 );
 
+// Texto principal, título e descrição aceitam até 5 opções cada: a Meta testa
+// as combinações e entrega a melhor para cada pessoa.
+const OptionsField = ({ label, values, onChange, multiline, placeholder, limit }) => {
+  const list = values.length > 0 ? values : [''];
+  const update = (index, value) => onChange(list.map((item, i) => (i === index ? value : item)));
+  const remove = (index) => onChange(list.filter((_, i) => i !== index));
+  const inputStyle = { width: '100%', padding: '10px 34px 10px 14px', borderRadius: '8px', border: '1px solid var(--border-main)', background: 'transparent', color: 'var(--text-main)', fontSize: '13px', outline: 'none', resize: 'vertical', boxSizing: 'border-box', fontFamily: 'inherit' };
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px', gap: '8px' }}>
+        <label style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{label}</label>
+        {list.length > 1 && <span style={{ fontSize: '10px', fontWeight: '800', color: '#93c5fd', background: 'rgba(47,128,255,0.12)', padding: '2px 8px', borderRadius: '10px' }}>{list.length} opções</span>}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {list.map((value, index) => (
+          <div key={index} style={{ position: 'relative' }}>
+            {multiline
+              ? <textarea rows={index === 0 ? 4 : 3} value={value} placeholder={index === 0 ? placeholder : `Opção ${index + 1}`} onChange={e => update(index, e.target.value)} style={inputStyle} />
+              : <input type="text" value={value} placeholder={index === 0 ? placeholder : `Opção ${index + 1}`} onChange={e => update(index, e.target.value)} style={inputStyle} />}
+            {index > 0 && (
+              <button type="button" onClick={() => remove(index)} title="Remover esta opção" aria-label={`Remover a opção ${index + 1}`}
+                style={{ position: 'absolute', top: '8px', right: '8px', width: '20px', height: '20px', borderRadius: '50%', border: 'none', background: 'rgba(239,68,68,0.15)', color: '#ef4444', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <X size={12} />
+              </button>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: 'var(--text-muted)', marginTop: '3px' }}>
+              <span>{list.length > 1 ? `Opção ${index + 1}` : ''}</span>
+              <span style={{ color: value.length > limit ? '#f59e0b' : undefined }} title={`A Meta recomenda até ${limit} caracteres`}>{value.length}/{limit}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+      {list.length < MAX_TEXT_OPTIONS && (
+        <button type="button" onClick={() => onChange([...list, ''])}
+          style={{ marginTop: '4px', display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '5px 10px', borderRadius: '6px', border: '1px dashed var(--border-main)', background: 'transparent', color: 'var(--text-muted)', fontSize: '11px', fontWeight: '700', cursor: 'pointer' }}>
+          <Plus size={12} /> Adicionar opção ({list.length}/{MAX_TEXT_OPTIONS})
+        </button>
+      )}
+    </div>
+  );
+};
+
 /**
  * @param {{ card: any, onClose: () => void, onComplete: () => void, projectId?: string, quickPreset?: any, startBlank?: boolean, onProfileSaved?: (profile: any) => void }} props
  */
@@ -457,12 +501,17 @@ const MetaAdCreator = ({ card, onClose, onComplete, projectId, quickPreset = nul
     const timer = setTimeout(() => resolve(null), 8000);
     const done = (val) => { clearTimeout(timer); resolve(val); };
 
+    // Mantém a proporção: a miniatura mostra se a peça é Feed ou Stories.
     const drawToThumb = (source) => {
       try {
+        const width = source.videoWidth || source.naturalWidth || 160;
+        const height = source.videoHeight || source.naturalHeight || 160;
+        const scale = 160 / Math.max(width, height);
         const canvas = document.createElement('canvas');
-        canvas.width = 120; canvas.height = 120;
-        canvas.getContext('2d').drawImage(source, 0, 0, 120, 120);
-        done(canvas.toDataURL('image/jpeg', 0.6));
+        canvas.width = Math.max(1, Math.round(width * scale));
+        canvas.height = Math.max(1, Math.round(height * scale));
+        canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height);
+        done(canvas.toDataURL('image/jpeg', 0.7));
       } catch { done(null); }
     };
 
@@ -846,76 +895,42 @@ ${rows.map(r => `<tr>
     }
   }, [accountData.bmId, allRawAccounts, connection.connected]);
 
-  const [advertisers, setAdvertisers] = useState([]);
-  const [loadingAdvertisers, setLoadingAdvertisers] = useState(false);
-  const [advertiserFetchError, setAdvertiserFetchError] = useState('');
-  const [advertiserAutoFallback, setAdvertiserAutoFallback] = useState(false);
-  // Confirmação de quem paga pelo anúncio. Sem ela a publicação não sai.
-  const [advertiserConfirmed, setAdvertiserConfirmed] = useState(false);
   // Categoria especial da campanha: sem valor padrão, de propósito.
   const [specialAdCategory, setSpecialAdCategory] = useState('');
 
+  // ─── Beneficiário e pagador (Brasil) ─────────────────────────────────────────
+  // Conjunto novo que entrega no Brasil declara quem se beneficia e quem paga.
+  // A Meta não lista essas identidades por API, mas os conjuntos que já existem
+  // na conta devolvem as que foram usadas: o sistema copia de lá, sem pedir nada.
+  // Conjunto existente já tem a declaração e não precisa dela de novo.
+  const [regulationScan, setRegulationScan] = useState({ status: 'idle', adSets: [], error: '' });
+  // Troca manual (só quando o operador quer outro par): { beneficiaryId, payerId }.
+  const [regulationOverride, setRegulationOverride] = useState(null);
+  const [editingRegulation, setEditingRegulation] = useState(false);
+  const [regulationScanKey, setRegulationScanKey] = useState(0);
+
   useEffect(() => {
-    const bmId = accountData.bmId;
-    const adAccountId = accountData.adAccountId;
-    if (!adAccountId) {
-      setAdvertisers([]);
-      setAdvertiserFetchError('');
-      setAdvertiserAutoFallback(false);
+    setRegulationOverride(null);
+    setEditingRegulation(false);
+  }, [accountData.adAccountId]);
+
+  useEffect(() => {
+    const adAccountId = normalizeAdAccountId(accountData.adAccountId);
+    if (!adAccountId || !connection.connected) {
+      setRegulationScan({ status: 'idle', adSets: [], error: '' });
       return;
     }
-
-    // O anunciante pagador (compliance_section) é uma declaração regulatória
-    // exigida pela Meta. Ele precisa ser um anunciante VERIFICADO; o ID da conta
-    // de anúncios não serve e a Meta recusa (subcode 3858634). Por isso o sistema
-    // não sugere mais o ID da conta: só reaproveita o ID que já foi aceito pela
-    // Meta nesta conta de anúncios, guardado neste navegador após a publicação.
-    const accountOwnId = String(adAccountId).replace(/^act_/, '').trim();
-    const remembered = readRememberedAdvertiser(adAccountId);
-    const current = accountData.advertiserAccountId;
-    if (!current || current === accountOwnId) {
-      // Também limpa o valor antigo que o sistema preencheu sozinho com o ID da conta.
-      setAccountData(prev => ({ ...prev, advertiserAccountId: remembered }));
-    }
-    setAdvertiserAutoFallback(false);
-    setAdvertiserConfirmed(true);
-
-    if (!bmId || bmId === '__direct__') {
-      setAdvertisers([]);
-      setAdvertiserFetchError('');
-      return;
-    }
-    if (!connection.connected) {
-      setAdvertisers([]);
-      setAdvertiserFetchError('');
-      return;
-    }
-    setLoadingAdvertisers(true);
-    setAdvertiserFetchError('');
-
-    const tryEndpoints = async () => {
-      // Tenta BM primeiro, depois ad account como fallback
-      const endpoints = [`${bmId}/advertisers`, adAccountId ? `${adAccountId}/advertisers` : null].filter(Boolean);
-
-      for (const path of endpoints) {
-        const data = await metaGet(path, { fields: 'id,name', limit: 50 }).catch(() => null);
-        if (!data) continue;
-        if (data.error) {
-          setAdvertiserFetchError(`API: [${data.error.code}] ${data.error.message}`);
-          continue;
-        }
-        if ((data.data || []).length > 0) {
-          setAdvertisers(data.data);
-          setAdvertiserFetchError('');
-          return;
-        }
-      }
-      // Nenhum endpoint retornou dados
-      setAdvertisers([]);
-    };
-
-    tryEndpoints().finally(() => setLoadingAdvertisers(false));
-  }, [accountData.bmId, accountData.adAccountId, connection.connected]);
+    let alive = true;
+    setRegulationScan({ status: 'loading', adSets: [], error: '' });
+    metaGetAll(
+      `${adAccountId}/adsets`,
+      { fields: 'id,name,campaign_id,created_time,regional_regulated_categories,regional_regulation_identities', limit: 100 },
+      { maxPages: 3 },
+    )
+      .then(adSets => { if (alive) setRegulationScan({ status: 'done', adSets, error: '' }); })
+      .catch(caught => { if (alive) setRegulationScan({ status: 'error', adSets: [], error: caught?.message || 'Falha ao ler os conjuntos da conta.' }); });
+    return () => { alive = false; };
+  }, [accountData.adAccountId, connection.connected, regulationScanKey]);
 
   const [apiData, setApiData] = useState({ campaigns: [], pages: [], igs: [], pixels: [] });
   const [loadingApi, setLoadingApi] = useState(false);
@@ -1174,8 +1189,29 @@ ${rows.map(r => `<tr>
     utmTags: DEFAULT_UTM,
     leadFormId: '',
     whatsappWelcomeMsg: 'Olá! Gostaria de mais informações.',
+    // Opções 2 a 5 de cada texto (a 1ª fica em primaryText, title e description).
+    variations: EMPTY_VARIATIONS,
   });
+  const variations = variationsOf(adsData);
+  const optionValues = (field) => [adsData[field] || '', ...variations[field]];
+  const setOptionValues = (field, values) => setAdsData(current => ({
+    ...current,
+    [field]: values[0] ?? '',
+    variations: { ...variationsOf(current), [field]: values.slice(1) },
+  }));
+  const globalTextOptions = {
+    primaryTexts: textOptions(optionValues('primaryText')),
+    titles: textOptions(optionValues('title')),
+    descriptions: textOptions(optionValues('description')),
+  };
+  const usingTextVariations = hasTextVariations(globalTextOptions);
   const [mediaFiles, setMediaFiles] = useState([]);
+  // Arrastar e soltar: qual lugar está recebendo ('panel' ou `${idDoAnúncio}:feed|story`).
+  const [dropTarget, setDropTarget] = useState(null);
+  // Lugar vazio com a lista de mídias aberta: { unitId, role }.
+  const [slotPicker, setSlotPicker] = useState(null);
+  const slotUploadRef = useRef(null);
+  const slotUploadTarget = useRef(null);
   const [createAsDraft, setCreateAsDraft] = useState(false);
   const [preserveOriginalMedia, setPreserveOriginalMedia] = useState(true);
   const [forceMessagesDest, setForceMessagesDest] = useState(false);
@@ -1193,19 +1229,18 @@ ${rows.map(r => `<tr>
   const [adSetInheritance, setAdSetInheritance] = useState({}); // { [adSetId]: { status, data, error } }
 
   const usingExistingAdSet = campAction === 'existing' && adSetAction === 'existing' && selectedAdSetIds.length > 0;
+  // Beneficiário e pagador só entram quando o sistema cria um conjunto novo.
+  const createsNewAdSet = !(campAction === 'existing' && adSetAction === 'existing');
+  const detectedRegulation = regulationScan.status === 'done' ? pickBrazilIdentities(regulationScan.adSets, selectedCampaignIds) : null;
+  const regulationIds = regulationOverride && (regulationOverride.beneficiaryId.trim() || regulationOverride.payerId.trim())
+    ? regulationOverride
+    : detectedRegulation;
 
   // ─── Unidades de anúncio: cada mídia de feed (com a versão Stories junto) ────
   const mediaById = Object.fromEntries(mediaFiles.map(m => [m.id, m]));
   const pairedStoryIds = new Set(Object.values(storyPairs));
   const adUnits = mediaFiles.filter(m => !pairedStoryIds.has(m.id));
   const storyOf = (feedId) => (storyPairs[feedId] ? mediaById[storyPairs[feedId]] || null : null);
-  const pairStory = (feedId, storyId) => setStoryPairs(prev => {
-    const next = { ...prev };
-    delete next[feedId];
-    for (const key of Object.keys(next)) if (next[key] === storyId || key === storyId) delete next[key];
-    if (storyId) next[feedId] = storyId;
-    return next;
-  });
 
   // ─── Herança: lê copy e URL dos anúncios de cada conjunto selecionado ────────
   const inheritActive = usingExistingAdSet && (inheritUrl || inheritCopy);
@@ -1289,6 +1324,7 @@ ${rows.map(r => `<tr>
     // A checagem do link cobre a proibição de destino dinâmico (cloaking): o
     // encurtador interno pode trocar de destino depois da aprovação do anúncio.
     3: mediaFiles.length === 0 ? 'Adicione pelo menos 1 mídia.' :
+       adUnits.length > MAX_ADS_PER_BATCH ? `A Meta aceita até ${MAX_ADS_PER_BATCH} anúncios por conjunto e o lote tem ${adUnits.length}. Junte as versões Feed + Stories ou remova ${adUnits.length - MAX_ADS_PER_BATCH}.` :
        inheritanceLoading ? 'Aguarde: lendo a copy e a URL dos anúncios de cada conjunto...' :
        (needsUrl && !inheritanceCoversUrl && !adsData.link.trim()) ? (inheritActive ? 'Informe a URL de destino para os conjuntos que ainda não têm anúncio.' : 'Informe a URL de destino.') :
        (needsUrl && !inheritanceCoversUrl ? validateDestinationUrl(adsData.link) : null) ||
@@ -1355,30 +1391,41 @@ ${rows.map(r => `<tr>
   // Vídeo entra do jeito que veio, como a imagem: a Meta aceita MP4, MOV, HEVC e
   // outros formatos e converte do lado dela. Converter aqui (ffmpeg só na CPU)
   // levava minutos por vídeo de celular.
-  const handleFileUpload = async (e) => {
-    const files = Array.from(e.target.files);
-    e.target.value = '';
+  const mediaFilesRef = useRef(mediaFiles);
+  mediaFilesRef.current = mediaFiles;
+  // Mídias que o operador separou à mão: o pareamento automático não as junta de novo.
+  const splitMediaIds = useRef(new Set());
+
+  // pairTo: { mediaId, role } coloca o arquivo enviado no lugar vazio de um
+  // anúncio — role 'story' vira a versão Stories dele, 'feed' a versão Feed.
+  const addMediaFiles = async (rawFiles, { pairTo = null } = {}) => {
+    const files = Array.from(rawFiles || []);
     if (!files.length) return;
-    const remainingSlots = Math.max(0, MAX_MEDIA_FILES - mediaFiles.length);
     const rejected = [];
-    const candidates = files.filter(file => {
-      if (isVideoFile(file) && file.size > META_MAX_VIDEO_BYTES) {
-        rejected.push(`${file.name}: o vídeo ultrapassa o limite de 4 GB da Meta.`);
-        return false;
-      }
-      return true;
-    });
+    const ignored = files.filter(file => !isVideoFile(file) && !isImageFile(file));
+    if (ignored.length) rejected.push(`${ignored.length} arquivo(s) ignorado(s): só entram imagens JPG, PNG, WEBP e vídeos.`);
+    const candidates = files
+      .filter(file => isVideoFile(file) || isImageFile(file))
+      .filter(file => {
+        if (isVideoFile(file) && file.size > META_MAX_VIDEO_BYTES) {
+          rejected.push(`${file.name}: o vídeo ultrapassa o limite de 4 GB da Meta.`);
+          return false;
+        }
+        return true;
+      })
+      // Em ordem de nome: a numeração dos anúncios segue a pasta.
+      .sort(byFileName);
+    const remainingSlots = Math.max(0, MAX_MEDIA_FILES - mediaFilesRef.current.length);
     if (candidates.length > remainingSlots) {
-      rejected.push(`Limite de ${MAX_MEDIA_FILES} mídias por publicação: ${candidates.length - remainingSlots} arquivo(s) ficaram de fora.`);
+      rejected.push(`Limite de ${MAX_MEDIA_FILES} arquivos por publicação: ${candidates.length - remainingSlots} ficaram de fora.`);
     }
     const allowed = candidates.slice(0, remainingSlots);
     if (rejected.length) setError(rejected.join(' '));
     if (!allowed.length) return;
-    const baseMedias = allowed.map((file, idx) => ({
+    const baseMedias = allowed.map((file) => ({
       id: uuidv4(), file,
       preview: URL.createObjectURL(file),
       type: isVideoFile(file) ? 'VIDEO' : 'IMAGE',
-      index: mediaFiles.length + idx + 1,
       thumbnailBase64: null,
     }));
     // Proporção decide se é Feed ou Stories (9:16) e permite parear as versões.
@@ -1395,11 +1442,18 @@ ${rows.map(r => `<tr>
       height: dimensions[idx].height,
       placement: detectPlacementFormat(dimensions[idx].width, dimensions[idx].height),
     }));
+    const target = pairTo && newMedias.length === 1 ? mediaFilesRef.current.find(m => m.id === pairTo.mediaId) : null;
     setMediaFiles(prev => [...prev, ...newMedias]);
-    setStoryPairs(prev => autoPairMedia(
-      [...mediaFiles, ...newMedias].map(m => ({ id: m.id, name: m.file.name, type: m.type, placement: m.placement || 'feed' })),
-      prev,
-    ));
+    if (target) {
+      if (pairTo.role === 'story') linkPair(target.id, newMedias[0].id);
+      else linkPair(newMedias[0].id, target.id);
+    } else {
+      setStoryPairs(prev => autoPairMedia(
+        [...mediaFilesRef.current, ...newMedias].map(m => ({ id: m.id, name: m.file.name, type: m.type, placement: m.placement || 'feed' })),
+        prev,
+        [...splitMediaIds.current],
+      ));
+    }
     if (!rejected.length) setError(null);
     // Captura thumbnails em paralelo logo após seleção dos arquivos
     const thumbs = await Promise.all(newMedias.map(m => mediaThumbnailBase64(m).catch(() => null)));
@@ -1421,7 +1475,85 @@ ${rows.map(r => `<tr>
     }));
   };
 
+  const handleFileUpload = (e, options) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    return addMediaFiles(files, options);
+  };
+
+  // Texto próprio de um anúncio fica na chave da mídia que lidera o anúncio;
+  // quando outra mídia passa a liderar, o texto vai junto.
+  const moveCopyOverride = (fromId, toId) => setAdCopyOverrides(prev => {
+    if (!prev[fromId] || prev[toId]) return prev;
+    const next = { ...prev, [toId]: prev[fromId] };
+    delete next[fromId];
+    return next;
+  });
+
+  /** Junta duas mídias no mesmo anúncio: `feedId` no Feed e `storyId` em Stories/Reels. */
+  const linkPair = (feedId, storyId) => {
+    if (!feedId || !storyId || feedId === storyId) return;
+    splitMediaIds.current.delete(feedId);
+    splitMediaIds.current.delete(storyId);
+    setStoryPairs(prev => {
+      const next = { ...prev };
+      for (const key of Object.keys(next)) {
+        if (key === feedId || key === storyId || next[key] === feedId || next[key] === storyId) delete next[key];
+      }
+      next[feedId] = storyId;
+      return next;
+    });
+    // O anúncio fica no lugar da mídia que já estava antes na lista.
+    setMediaFiles(prev => {
+      const feedIndex = prev.findIndex(m => m.id === feedId);
+      const storyIndex = prev.findIndex(m => m.id === storyId);
+      if (feedIndex < 0 || storyIndex < 0 || feedIndex < storyIndex) return prev;
+      const next = [...prev];
+      const [feed] = next.splice(feedIndex, 1);
+      next.splice(storyIndex, 0, feed);
+      return next;
+    });
+    moveCopyOverride(storyId, feedId);
+  };
+
+  /** Separa o par: a versão Stories vira um anúncio próprio, logo depois. */
+  const unlinkPair = (feedId) => {
+    const storyId = storyPairs[feedId];
+    if (!storyId) return;
+    splitMediaIds.current.add(feedId);
+    splitMediaIds.current.add(storyId);
+    setStoryPairs(prev => { const next = { ...prev }; delete next[feedId]; return next; });
+    setMediaFiles(prev => {
+      const story = prev.find(m => m.id === storyId);
+      if (!story) return prev;
+      const next = prev.filter(m => m.id !== storyId);
+      next.splice(next.findIndex(m => m.id === feedId) + 1, 0, story);
+      return next;
+    });
+  };
+
+  /** Inverte o par: o que estava no Feed vai para Stories e vice-versa. */
+  const swapPair = (feedId) => {
+    const storyId = storyPairs[feedId];
+    if (!storyId) return;
+    setStoryPairs(prev => { const next = { ...prev }; delete next[feedId]; next[storyId] = feedId; return next; });
+    setMediaFiles(prev => {
+      const a = prev.findIndex(m => m.id === feedId);
+      const b = prev.findIndex(m => m.id === storyId);
+      if (a < 0 || b < 0) return prev;
+      const next = [...prev];
+      [next[a], next[b]] = [next[b], next[a]];
+      return next;
+    });
+    moveCopyOverride(feedId, storyId);
+  };
+
   const removeMedia = (id) => {
+    const media = mediaFiles.find(m => m.id === id);
+    if (media?.preview) URL.revokeObjectURL(media.preview);
+    // Sem o Feed, a versão Stories continua como anúncio e herda o texto próprio.
+    if (storyPairs[id]) moveCopyOverride(id, storyPairs[id]);
+    else setAdCopyOverrides(prev => { if (!prev[id]) return prev; const next = { ...prev }; delete next[id]; return next; });
     setMediaFiles(prev => prev.filter(m => m.id !== id));
     setStoryPairs(prev => {
       const next = { ...prev };
@@ -1429,6 +1561,28 @@ ${rows.map(r => `<tr>
       for (const key of Object.keys(next)) if (next[key] === id) delete next[key];
       return next;
     });
+  };
+
+  /** Apaga o anúncio inteiro (Feed e Stories). */
+  const removeAd = (unitId) => {
+    const storyId = storyPairs[unitId];
+    for (const id of [unitId, storyId].filter(Boolean)) {
+      const media = mediaFiles.find(m => m.id === id);
+      if (media?.preview) URL.revokeObjectURL(media.preview);
+    }
+    setAdCopyOverrides(prev => { if (!prev[unitId]) return prev; const next = { ...prev }; delete next[unitId]; return next; });
+    setMediaFiles(prev => prev.filter(m => m.id !== unitId && m.id !== storyId));
+    setStoryPairs(prev => { const next = { ...prev }; delete next[unitId]; return next; });
+  };
+
+  const clearAllMedia = () => {
+    if (!window.confirm(`Remover as ${mediaFiles.length} mídias do lote?`)) return;
+    mediaFiles.forEach(m => m.preview && URL.revokeObjectURL(m.preview));
+    splitMediaIds.current.clear();
+    setMediaFiles([]);
+    setStoryPairs({});
+    setAdCopyOverrides({});
+    setActiveCopyFileId(null);
   };
 
   const pushLog = (msg, status = 'loading') => setLogs(prev => [...prev, { id: Date.now() + Math.random(), msg, status }]);
@@ -1458,15 +1612,8 @@ ${rows.map(r => `<tr>
       setActiveTab(1);
       return;
     }
-    const effectiveAdvertiserIdCheck = accountData.advertiserAccountId || adSetData.advertiserAccountId;
-    if (!effectiveAdvertiserIdCheck) {
-      setError('Informe o ID do anunciante VERIFICADO que paga por estes anúncios (Business Manager → Configurações → Informações do Anunciante). O ID da conta de anúncios não é aceito pela Meta.');
-      setActiveTab(0);
-      return;
-    }
-    if (advertiserAutoFallback && !advertiserConfirmed) {
-      setError('Confirme que o anunciante pagador está correto na aba Conta & BM. Esse dado é uma declaração regulatória e precisa ser conferido por uma pessoa.');
-      setActiveTab(0);
+    if (createsNewAdSet && regulationScan.status === 'loading') {
+      setError('Aguarde um instante: o sistema ainda está buscando o beneficiário e o pagador nos conjuntos da conta.');
       return;
     }
 
@@ -1794,19 +1941,16 @@ ${rows.map(r => `<tr>
           targeting: JSON.stringify(targeting),
         };
         if (campData.budgetType !== 'CBO') adSetPayload.daily_budget = String(adSetData.budget * 100);
-        // compliance_section: exigido pela Meta para anúncios no Brasil
-        // (subcode 3858634). É a declaração de quem paga pelo anúncio, então
-        // não aceita valor de reserva — o ID vem da seleção confirmada pelo
-        // operador, e a publicação já foi bloqueada antes daqui se faltasse.
-        const effectiveAdvertiserId = accountData.advertiserAccountId || adSetData.advertiserAccountId;
-        if (!effectiveAdvertiserId || effectiveAdvertiserId === '__direct__') {
-          throw new Error('Anunciante pagador não identificado. Selecione o anunciante na aba Conta & BM — a Meta exige essa declaração e ela não pode ser presumida.');
+        // Beneficiário e pagador (Brasil): o mesmo par que os conjuntos da conta
+        // já declaram, ou o que o operador informou. Sem nenhum, segue sem a
+        // declaração — se a conta exigir, a Meta recusa e o aviso explica o que fazer.
+        if (regulationIds) {
+          Object.assign(adSetPayload, brazilRegulationParams(regulationIds));
+          const origin = regulationOverride ? 'informado por você' : `copiado do conjunto "${detectedRegulation?.sourceAdSetName}"`;
+          pushLog(`Beneficiário ${regulationIds.beneficiaryId || regulationIds.payerId} · pagador ${regulationIds.payerId || regulationIds.beneficiaryId} (${origin})`, 'success');
+        } else {
+          pushLog('Nenhum conjunto da conta declara beneficiário e pagador — criando sem a declaração.', 'success');
         }
-        adSetPayload.compliance_section = JSON.stringify({
-          payment_advertiser: { advertiser_id: effectiveAdvertiserId },
-        });
-        pushLog(`Anunciante pagador declarado: ${effectiveAdvertiserId}`, 'success');
-        const advertiserToRemember = effectiveAdvertiserId;
 
         if (effectiveObjective === 'OUTCOME_SALES') {
           if (adSetData.pixelId) {
@@ -1858,8 +2002,6 @@ ${rows.map(r => `<tr>
         allAdSetIds = [r.id];
         updateLastLog('success');
         pushLog(`Conjunto criado · ID: ${r.id}`, 'success');
-        // A Meta aceitou este anunciante nesta conta: guarda para não pedir de novo.
-        rememberAdvertiser(adAccountId, advertiserToRemember);
         setProgress(25);
       }
 
@@ -1964,11 +2106,20 @@ ${rows.map(r => `<tr>
         leadFormId:       adCopyOverrides[fileId]?.leadFormId        ?? adsData.leadFormId,
       } : adsData;
 
+      // Opções de texto: texto próprio do anúncio vale sozinho; senão, as
+      // opções globais (até 5 de cada).
+      const optionsFor = (fileId) => {
+        const override = individualCopyMode ? adCopyOverrides[fileId] || {} : {};
+        const pick = (field) => (override[field] !== undefined ? textOptions([override[field]]) : globalTextOptions[OPTION_KEYS[field]]);
+        return { primaryTexts: pick('primaryText'), titles: pick('title'), descriptions: pick('description') };
+      };
+
       // Herança: o que o conjunto já usa tem prioridade sobre a copy digitada.
       const copyFor = (target, fileId) => {
-        const base = { ...resolveCopy(fileId), inheritedUrlTags: '' };
+        const base = { ...resolveCopy(fileId), inheritedUrlTags: '', options: optionsFor(fileId) };
         const inherited = inheritanceFor(target.adSetId)?.data;
         if (!inherited) return base;
+        const inheritedOptions = inherited.options || { primaryTexts: [], titles: [], descriptions: [] };
         return {
           ...base,
           ...(inheritCopy ? {
@@ -1976,6 +2127,11 @@ ${rows.map(r => `<tr>
             title: inherited.title || base.title,
             description: inherited.description || base.description,
             cta: inherited.cta || base.cta,
+            options: {
+              primaryTexts: inheritedOptions.primaryTexts.length ? inheritedOptions.primaryTexts : base.options.primaryTexts,
+              titles: inheritedOptions.titles.length ? inheritedOptions.titles : base.options.titles,
+              descriptions: inheritedOptions.descriptions.length ? inheritedOptions.descriptions : base.options.descriptions,
+            },
           } : {}),
           ...(inheritUrl && inherited.link ? { link: inherited.link, utmTags: '', inheritedUrlTags: inherited.urlTags || '' } : {}),
         };
@@ -1994,58 +2150,87 @@ ${rows.map(r => `<tr>
           };
 
       const storyWarnings = new Set();
+      const singleTextWarnings = new Map(); // conjunto → motivo de ir só a 1ª opção de texto
+      // Devolve os parâmetros do criativo e, quando ele leva várias opções de
+      // texto, a versão com só a 1ª opção: se a Meta recusar as opções, essa
+      // versão entra no lugar e o anúncio sai mesmo assim.
       const buildCreativeParams = (target, unit) => {
         const flags = destFlags(target.destType);
         const copy = copyFor(target, unit.media.id);
         const perFileFinalUrl = (flags.isMsgDest || !needsUrl) ? '' : (copy.link + (copy.utmTags || ''));
         const feedUp = uploadedById.get(unit.media.id);
         const storyUp = unit.story ? uploadedById.get(unit.story.id) : null;
+        const asset = (up) => ({ videoId: up.uploaded.id, hash: up.uploaded.hash, thumbHash: up.thumbHash, thumbUrl: up.thumbUrl });
+        const identity = { page_id: accountData.pageId, ...(adSetData.igId ? { instagram_user_id: adSetData.igId } : {}) };
         // Feed + Stories no mesmo anúncio só funciona com destino site: a Meta
         // aceita um único link_urls e não suporta CTA de mensagem/formulário aqui.
-        const canUsePlacements = Boolean(storyUp && perFileFinalUrl && !flags.isMsgDest && !flags.isLeadForm && !target.isMultiDest);
+        const siteDestination = Boolean(perFileFinalUrl && !flags.isMsgDest && !flags.isLeadForm && !target.isMultiDest);
+        const canUsePlacements = Boolean(storyUp && siteDestination);
         if (storyUp && !canUsePlacements) storyWarnings.add(target.name);
+        const multiText = hasTextVariations(copy.options);
+        if (multiText && canUsePlacements) singleTextWarnings.set(target.name, 'anúncios com Feed + Stories aceitam uma opção de cada texto');
+        else if (multiText && !siteDestination) singleTextWarnings.set(target.name, 'opções de texto só valem para destino site');
 
-        const igId = adSetData.igId || '';
-        let params;
+        const finish = (params) => {
+          if (target.isMultiDest || preserveOriginalMedia) {
+            params.degrees_of_freedom_spec = JSON.stringify({ creative_features_spec: preserveOriginalMedia ? originalMediaFeatures(feedUp.uploaded.type) : {} });
+          }
+          if (copy.inheritedUrlTags) params.url_tags = copy.inheritedUrlTags;
+          return params;
+        };
+        const singleText = () => finish({
+          object_story_spec: JSON.stringify(buildStorySpec({
+            uploaded: feedUp.uploaded, thumbHash: feedUp.thumbHash, thumbUrl: feedUp.thumbUrl, ...flags,
+            isMultiDest: target.isMultiDest, finalUrl: perFileFinalUrl, pageId: accountData.pageId,
+            igId: adSetData.igId || '', copy,
+          })),
+        });
+
         if (canUsePlacements) {
-          const asset = (up) => ({ videoId: up.uploaded.id, hash: up.uploaded.hash, thumbHash: up.thumbHash, thumbUrl: up.thumbUrl });
-          params = {
-            object_story_spec: JSON.stringify({ page_id: accountData.pageId, ...(igId ? { instagram_user_id: igId } : {}) }),
-            asset_feed_spec: JSON.stringify(buildPlacementAssetFeedSpec({
-              mediaType: feedUp.uploaded.type,
-              feed: asset(feedUp),
-              story: asset(storyUp),
-              copy,
-              link: perFileFinalUrl,
-            })),
-          };
-        } else {
-          params = {
-            object_story_spec: JSON.stringify(buildStorySpec({
-              uploaded: feedUp.uploaded, thumbHash: feedUp.thumbHash, thumbUrl: feedUp.thumbUrl, ...flags,
-              isMultiDest: target.isMultiDest, finalUrl: perFileFinalUrl, pageId: accountData.pageId,
-              igId, copy,
-            })),
+          return {
+            params: finish({
+              object_story_spec: JSON.stringify(identity),
+              asset_feed_spec: JSON.stringify(buildPlacementAssetFeedSpec({
+                mediaType: feedUp.uploaded.type,
+                feed: asset(feedUp),
+                story: asset(storyUp),
+                copy,
+                link: perFileFinalUrl,
+              })),
+            }),
+            fallback: null,
           };
         }
-        if (target.isMultiDest || preserveOriginalMedia) {
-          params.degrees_of_freedom_spec = JSON.stringify({ creative_features_spec: preserveOriginalMedia ? originalMediaFeatures(feedUp.uploaded.type) : {} });
+        if (multiText && siteDestination) {
+          return {
+            params: finish({
+              object_story_spec: JSON.stringify(identity),
+              asset_feed_spec: JSON.stringify(buildTextOptionsAssetFeedSpec({
+                mediaType: feedUp.uploaded.type,
+                asset: asset(feedUp),
+                options: copy.options,
+                cta: copy.cta,
+                link: perFileFinalUrl,
+              })),
+            }),
+            fallback: singleText(),
+          };
         }
-        if (copy.inheritedUrlTags) params.url_tags = copy.inheritedUrlTags;
-        return params;
+        return { params: singleText(), fallback: null };
       };
 
-      const uniqueCreatives = [];           // [{ params }]
+      const uniqueCreatives = [];           // [{ params, fallback }]
       const creativeIndexByKey = new Map(); // conteúdo → índice (dedupe)
       const plan = targets.map(target => ({
         target,
         items: units.map((unit) => {
-          const params = buildCreativeParams(target, unit);
+          const { params, fallback } = buildCreativeParams(target, unit);
           const key = JSON.stringify(params);
           if (!creativeIndexByKey.has(key)) {
             creativeIndexByKey.set(key, uniqueCreatives.length);
             const suffix = inheritActive && targets.length > 1 ? ` · ${String(target.name).slice(0, 60)}` : '';
-            uniqueCreatives.push({ params: { name: `Creative - ${unit.adName}${suffix}`, ...params } });
+            const name = `Creative - ${unit.adName}${suffix}`;
+            uniqueCreatives.push({ params: { name, ...params }, fallback: fallback ? { name, ...fallback } : null });
           }
           return { unit, creativeIndex: creativeIndexByKey.get(key) };
         }),
@@ -2053,26 +2238,53 @@ ${rows.map(r => `<tr>
       for (const name of storyWarnings) {
         pushLog(`⚠️ "${name}": Feed + Stories precisa de destino site com URL (este conjunto é de mensagens, formulário ou multi-destino) — publicada só a versão de feed.`, 'error');
       }
+      for (const [name, reason] of singleTextWarnings) {
+        pushLog(`ℹ️ "${name}": ${reason} — vai a 1ª opção de texto, título e descrição.`, 'success');
+      }
+      const textOptionCreatives = uniqueCreatives.filter(c => c.fallback).length;
+      if (textOptionCreatives > 0) {
+        pushLog(`${textOptionCreatives} criativo(s) com várias opções de texto: a Meta testa as combinações e entrega a melhor para cada pessoa.`, 'success');
+      }
       if (inheritActive) {
         const inheritedCount = targets.filter(t => inheritanceFor(t.adSetId)?.data).length;
         pushLog(`Herança: ${inheritedCount}/${targets.length} conjunto(s) com ${[inheritUrl && 'URL', inheritCopy && 'copy'].filter(Boolean).join(' e ')} dos anúncios que já rodam.`, 'success');
       }
 
-      pushLog(`Criando ${uniqueCreatives.length} criativo(s) via Batch API...`);
+      const creativesLogId = 'creatives-batch';
+      setLogs(prev => [...prev, { id: creativesLogId, msg: `Criando ${uniqueCreatives.length} criativo(s) via Batch API...`, status: 'loading' }]);
       const creativeIds = [];
+      const readBatchBody = (item) => { try { return JSON.parse(item.body || '{}'); } catch { return {}; } };
+      const batchErrorText = (item, body) => `${body.error?.error_user_msg || body.error?.message || `HTTP ${item.code}`} | Subcode: ${body.error?.error_subcode || 'N/A'}`;
       for (let start = 0; start < uniqueCreatives.length; start += 50) {
         const chunk = uniqueCreatives.slice(start, start + 50);
         const batchCreativeRes = await metaBatch(chunk.map(c => buildBatchItem(`${adAccountId}/adcreatives`, c.params)), rateLimitNotice);
+        const retry = []; // { index, reason }
         for (let i = 0; i < batchCreativeRes.length; i++) {
-          let body;
-          try { body = JSON.parse(batchCreativeRes[i].body || '{}'); } catch { body = {}; }
+          const body = readBatchBody(batchCreativeRes[i]);
           if (batchCreativeRes[i].code !== 200 || body.error) {
-            throw new Error(`Criativo [${start + i + 1}]: ${body.error?.error_user_msg || body.error?.message || `HTTP ${batchCreativeRes[i].code}`} | Subcode: ${body.error?.error_subcode || 'N/A'}`);
+            if (!chunk[i].fallback) {
+              updateLogById(creativesLogId, 'error');
+              throw new Error(`Criativo [${start + i + 1}]: ${batchErrorText(batchCreativeRes[i], body)}`);
+            }
+            retry.push({ index: i, reason: batchErrorText(batchCreativeRes[i], body) });
+            continue;
           }
-          creativeIds.push(body.id);
+          creativeIds[start + i] = body.id;
+        }
+        if (retry.length > 0) {
+          pushLog(`⚠️ A Meta não aceitou as opções de texto em ${retry.length} criativo(s) (${retry[0].reason}). Refazendo com a 1ª opção...`, 'error');
+          const retryRes = await metaBatch(retry.map(r => buildBatchItem(`${adAccountId}/adcreatives`, chunk[r.index].fallback)), rateLimitNotice);
+          retryRes.forEach((item, k) => {
+            const body = readBatchBody(item);
+            if (item.code !== 200 || body.error) {
+              updateLogById(creativesLogId, 'error');
+              throw new Error(`Criativo [${start + retry[k].index + 1}]: ${batchErrorText(item, body)}`);
+            }
+            creativeIds[start + retry[k].index] = body.id;
+          });
         }
       }
-      updateLastLog('success');
+      updateLogById(creativesLogId, 'success');
       setProgress(90);
 
       // ── 5. Batch: anúncios (loop por conjunto) ───────────────────────────────
@@ -2203,11 +2415,10 @@ ${rows.map(r => `<tr>
     } catch (err) {
       updateLastLog('error');
       const msg = err.message || 'Erro desconhecido na Graph API.';
+      const lowerMsg = msg.toLowerCase();
       const isVerificationErr =
-        msg.includes('/3858634') ||
-        msg.toLowerCase().includes('compliance_section') ||
-        msg.toLowerCase().includes('anunciante verificado') ||
-        msg.toLowerCase().includes('payment_advertiser');
+        msg.includes('3858634') ||
+        ['regional_regulat', 'beneficiary', 'payer', 'beneficiári', 'pagador', 'anunciante verificado'].some(term => lowerMsg.includes(term));
       pushLog(`ERRO: ${msg}`, 'error');
       if (isVerificationErr) {
         setRawMetaError(msg);
@@ -2291,7 +2502,7 @@ ${rows.map(r => `<tr>
                 </div>
                 {(error === 'ADVERTISER_VERIFICATION' || (error + rawMetaError).toLowerCase().includes('verif')) && (
                   <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.6 }}>
-                    Se esse erro persiste mesmo após a verificação na BM, copie a mensagem acima e entre em contato com o suporte Meta ou verifique se a conta de anúncios selecionada pertence à mesma BM verificada.
+                    A Meta pediu o <strong style={{ color: 'var(--text-main)' }}>beneficiário e o pagador</strong> do conjunto. O jeito mais rápido: crie <strong style={{ color: 'var(--text-main)' }}>um</strong> conjunto nesta conta pelo Gerenciador de Anúncios (lá a Meta pede para escolher os dois). A partir daí o sistema copia sozinho em todo conjunto novo. Outra opção é publicar em um conjunto que já existe — ele já tem a declaração.
                   </div>
                 )}
                 <button
@@ -2355,7 +2566,7 @@ ${rows.map(r => `<tr>
         backdropFilter: 'blur(6px)',
       }}
     >
-      <div style={{ width: activeTab === 3 ? '1100px' : '820px', maxWidth: '97vw', backgroundColor: 'var(--bg-app)', border: '1px solid var(--border-light)', borderRadius: '16px', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 24px 48px rgba(0,0,0,0.5)', height: '90vh', transition: 'width 0.25s ease' }}>
+      <div style={{ width: activeTab === 3 ? '1280px' : '820px', maxWidth: '97vw', backgroundColor: 'var(--bg-app)', border: '1px solid var(--border-light)', borderRadius: '16px', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 24px 48px rgba(0,0,0,0.5)', height: '90vh', transition: 'width 0.25s ease' }}>
 
         {/* Header */}
         <div style={{ padding: '18px 24px', backgroundColor: 'var(--bg-surface)', borderBottom: '1px solid var(--border-light)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
@@ -2898,89 +3109,6 @@ ${rows.map(r => `<tr>
                       </div>
                     )}
 
-                    {/* ── ETAPA 5: Anunciante da conta ── */}
-                    {accountData.adAccountId && (() => {
-                      const done = !!accountData.advertiserAccountId;
-                      const selName = advertisers.find(a => a.id === accountData.advertiserAccountId)?.name;
-                      return (
-                        <div style={{ borderTop: '1px solid var(--border-light)', paddingTop: '20px', paddingBottom: '20px' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
-                            <div style={{ width: '26px', height: '26px', borderRadius: '50%', background: done ? '#10b981' : 'rgba(245,158,11,0.8)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontWeight: '800', flexShrink: 0 }}>
-                              {done ? <CheckCircle size={14} /> : '5'}
-                            </div>
-                            <span style={{ fontSize: '13px', fontWeight: '800', color: 'var(--text-main)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Anunciante da conta</span>
-                            {advertiserAutoFallback && <span style={{ fontSize: '10px', fontWeight: '700', background: 'rgba(245,158,11,0.14)', color: '#f59e0b', padding: '2px 8px', borderRadius: '4px' }}>SUGERIDO — CONFIRME</span>}
-                            {done && selName && <span style={{ fontSize: '12px', color: '#10b981', fontWeight: '600' }}>— {selName}</span>}
-                          </div>
-                          <div style={{ paddingLeft: '36px', maxWidth: '400px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                            {loadingAdvertisers ? (
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-muted)', fontSize: '13px' }}>
-                                <Loader2 size={14} color="var(--primary)" style={{ animation: 'spin 1s linear infinite' }} /> Buscando anunciantes...
-                              </div>
-                            ) : advertisers.length > 0 ? (
-                              <SearchableSelect
-                                items={[
-                                  ...(advertiserAutoFallback ? [{ id: accountData.advertiserAccountId, name: `Conta de anúncios · ${accountData.advertiserAccountId}` }] : []),
-                                  ...advertisers,
-                                ].filter((item, index, list) => item.id && list.findIndex(candidate => candidate.id === item.id) === index)}
-                                value={accountData.advertiserAccountId}
-                                onChange={val => {
-                                  setAdvertiserAutoFallback(false);
-                                  setAccountData(a => ({ ...a, advertiserAccountId: val }));
-                                }}
-                                placeholder="Selecione o Anunciante..."
-                                highlight={done}
-                              />
-                            ) : (
-                              <>
-                                <input
-                                  type="text"
-                                  placeholder="Cole o ID do Anunciante (ex: 123456789012345)"
-                                  value={accountData.advertiserAccountId}
-                                  onChange={e => {
-                                    setAdvertiserAutoFallback(false);
-                                    setAccountData(a => ({ ...a, advertiserAccountId: e.target.value.trim() }));
-                                  }}
-                                  style={{ padding: '10px 14px', borderRadius: '8px', border: `1px solid ${done ? '#10b981' : 'rgba(245,158,11,0.5)'}`, background: 'transparent', color: 'var(--text-main)', fontSize: '13px', outline: 'none', fontFamily: 'monospace', width: '100%', boxSizing: 'border-box' }}
-                                />
-                                <div style={{ fontSize: '11px', color: 'var(--text-muted)', lineHeight: 1.6 }}>
-                                  Cole o ID do anunciante <strong style={{ color: 'var(--text-main)' }}>verificado</strong> (não o ID da conta de anúncios). Veja em <strong style={{ color: 'var(--text-main)' }}>business.facebook.com → Configurações → Informações do Anunciante</strong>. Depois que a Meta aceitar, o sistema lembra o ID desta conta.
-                                </div>
-                              </>
-                            )}
-
-                            {/* Declaração de quem paga pelo anúncio. A Meta exige
-                                esse dado no Brasil, então ele é confirmado por uma
-                                pessoa em vez de ser presumido pelo sistema. */}
-                            {advertiserAutoFallback && accountData.advertiserAccountId && (
-                              <label style={{ display: 'flex', alignItems: 'flex-start', gap: '9px', padding: '11px 13px', borderRadius: '8px', cursor: 'pointer', background: advertiserConfirmed ? 'rgba(16,185,129,0.06)' : 'rgba(245,158,11,0.07)', border: `1px solid ${advertiserConfirmed ? 'rgba(16,185,129,0.28)' : 'rgba(245,158,11,0.38)'}` }}>
-                                <input
-                                  type="checkbox"
-                                  checked={advertiserConfirmed}
-                                  onChange={e => setAdvertiserConfirmed(e.target.checked)}
-                                  style={{ marginTop: '2px', flexShrink: 0 }}
-                                />
-                                <span style={{ fontSize: '11.5px', lineHeight: 1.55, color: advertiserConfirmed ? '#10b981' : '#f59e0b', fontWeight: '600' }}>
-                                  Confirmo que <strong>{accountData.advertiserAccountId}</strong> é o anunciante que paga por estes anúncios. Essa informação vai para a Meta como declaração legal de pagador.
-                                </span>
-                              </label>
-                            )}
-                            {done && (
-                              <div style={{ padding: '8px 12px', background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.25)', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}>
-                                <CheckCircle size={13} color="#10b981" style={{ flexShrink: 0 }} />
-                                <span style={{ color: 'var(--text-muted)' }}>
-                                  {selName
-                                    ? <><strong style={{ color: 'var(--text-main)' }}>{selName}</strong> <span style={{ fontFamily: 'monospace', fontSize: '11px' }}>· ID: {accountData.advertiserAccountId}</span></>
-                                    : <><span>ID: </span><strong style={{ fontFamily: 'monospace', color: 'var(--text-main)' }}>{accountData.advertiserAccountId}</strong></>
-                                  }
-                                </span>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })()}
-
                     {/* ── Confirmação final ── */}
                     {accountData.bmId && accountData.adAccountId && accountData.pageId && (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -3311,25 +3439,62 @@ ${rows.map(r => `<tr>
                             </div>
                           )}
 
-                          {/* Anunciante da conta — resumo do que foi configurado no Tab 0 */}
-                          {accountData.advertiserAccountId ? (
-                            <div style={{ padding: '10px 14px', background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.25)', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}>
-                              <CheckCircle size={13} color="#10b981" style={{ flexShrink: 0 }} />
-                              <span style={{ color: 'var(--text-muted)', flex: 1 }}>
-                                Anunciante da conta: <strong style={{ color: 'var(--text-main)' }}>
-                                  {advertisers.find(a => a.id === accountData.advertiserAccountId)?.name || accountData.advertiserAccountId}
-                                </strong>
-                                <span style={{ marginLeft: '8px', fontFamily: 'monospace', fontSize: '11px' }}>ID: {accountData.advertiserAccountId}</span>
-                              </span>
-                              <button onClick={() => setActiveTab(0)} style={{ fontSize: '11px', color: 'var(--primary)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: '700', whiteSpace: 'nowrap' }}>Alterar ↩</button>
-                            </div>
-                          ) : (
-                            <div style={{ padding: '10px 14px', background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}>
-                              <AlertCircle size={13} color="#f59e0b" style={{ flexShrink: 0 }} />
-                              <span style={{ color: '#f59e0b', fontWeight: '600', flex: 1 }}>Anunciante verificado não configurado — a Meta pode rejeitar o conjunto.</span>
-                              <button onClick={() => setActiveTab(0)} style={{ fontSize: '11px', color: '#f59e0b', background: 'none', border: 'none', cursor: 'pointer', fontWeight: '700', whiteSpace: 'nowrap' }}>Configurar ↩</button>
-                            </div>
-                          )}
+                          {/* Beneficiário e pagador (Brasil): copiados dos conjuntos da conta */}
+                          {(() => {
+                            const found = Boolean(regulationIds);
+                            const tone = found ? '16,185,129' : regulationScan.status === 'loading' ? '47,128,255' : '245,158,11';
+                            const linkButton = { fontSize: '11px', color: 'var(--primary)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: '700', whiteSpace: 'nowrap', padding: 0 };
+                            const idInput = { width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid var(--border-main)', background: 'transparent', color: 'var(--text-main)', fontSize: '12px', outline: 'none', fontFamily: 'monospace', boxSizing: 'border-box' };
+                            return (
+                              <div style={{ padding: '12px 14px', background: `rgba(${tone},0.06)`, border: `1px solid rgba(${tone},0.28)`, borderRadius: '10px', display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '12px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                  {regulationScan.status === 'loading'
+                                    ? <Loader2 size={14} color="#2f80ff" style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }} />
+                                    : <ShieldCheck size={14} color={found ? '#10b981' : '#f59e0b'} style={{ flexShrink: 0 }} />}
+                                  <strong style={{ color: 'var(--text-main)' }}>Beneficiário e pagador</strong>
+                                  <span style={{ color: 'var(--text-muted)' }}>· exigidos pela Meta para anúncios no Brasil</span>
+                                  <div style={{ marginLeft: 'auto', display: 'flex', gap: '12px' }}>
+                                    {regulationScan.status !== 'loading' && connection.connected && <button type="button" style={linkButton} onClick={() => setRegulationScanKey(k => k + 1)}>Buscar de novo</button>}
+                                    <button type="button" style={linkButton} onClick={() => {
+                                      if (!regulationOverride) setRegulationOverride({ beneficiaryId: '', payerId: '' });
+                                      setEditingRegulation(v => !v);
+                                    }}>{editingRegulation ? 'Fechar' : 'Trocar'}</button>
+                                  </div>
+                                </div>
+                                {regulationScan.status === 'loading' && <span style={{ color: 'var(--text-muted)' }}>Procurando nos conjuntos que já existem nesta conta...</span>}
+                                {found && (
+                                  <span style={{ color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                                    Beneficiário <strong style={{ color: 'var(--text-main)', fontFamily: 'monospace' }}>{regulationIds.beneficiaryId || regulationIds.payerId}</strong>
+                                    {' · '}Pagador <strong style={{ color: 'var(--text-main)', fontFamily: 'monospace' }}>{regulationIds.payerId || regulationIds.beneficiaryId}</strong>
+                                    <br />
+                                    {regulationOverride && (regulationOverride.beneficiaryId.trim() || regulationOverride.payerId.trim())
+                                      ? 'Informado por você.'
+                                      : `Preenchido sozinho: é o mesmo par do conjunto "${detectedRegulation.sourceAdSetName}"${detectedRegulation.adSetCount > 1 ? ` e de outros ${detectedRegulation.adSetCount - 1} conjunto(s)` : ''} desta conta.`}
+                                  </span>
+                                )}
+                                {!found && regulationScan.status !== 'loading' && (
+                                  <span style={{ color: '#f59e0b', lineHeight: 1.5, fontWeight: '600' }}>
+                                    {regulationScan.status === 'error'
+                                      ? `Não foi possível ler os conjuntos da conta (${regulationScan.error}).`
+                                      : 'Nenhum conjunto desta conta declara beneficiário e pagador ainda.'}
+                                    {' '}O conjunto será criado sem a declaração. Se a Meta exigir, crie um conjunto nesta conta pelo Gerenciador de Anúncios uma vez e clique em "Buscar de novo": a partir daí o sistema copia sozinho.
+                                  </span>
+                                )}
+                                {editingRegulation && regulationOverride && (
+                                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                    <input aria-label="ID do beneficiário" placeholder={detectedRegulation?.beneficiaryId || 'ID do beneficiário'} value={regulationOverride.beneficiaryId}
+                                      onChange={e => setRegulationOverride(prev => ({ ...prev, beneficiaryId: e.target.value.trim() }))} style={idInput} />
+                                    <input aria-label="ID do pagador" placeholder={detectedRegulation?.payerId || 'ID do pagador (vazio = mesmo do beneficiário)'} value={regulationOverride.payerId}
+                                      onChange={e => setRegulationOverride(prev => ({ ...prev, payerId: e.target.value.trim() }))} style={idInput} />
+                                    <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '11px', color: 'var(--text-muted)' }}>
+                                      <span>Pode ser o mesmo ID nos dois campos.</span>
+                                      {detectedRegulation && <button type="button" style={linkButton} onClick={() => { setRegulationOverride(null); setEditingRegulation(false); }}>Usar o encontrado na conta</button>}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </>
                       );
                     })()}
@@ -3350,171 +3515,261 @@ ${rows.map(r => `<tr>
                   const activeId = adUnits.some(m => m.id === activeCopyFileId) ? activeCopyFileId : (adUnits[0]?.id ?? null);
                   const activeIdx = adUnits.findIndex(m => m.id === activeId);
                   const activeMedia = adUnits[activeIdx] ?? null;
-                  const unitIndexById = Object.fromEntries(adUnits.map((m, i) => [m.id, i]));
-                  const feedOfStory = Object.fromEntries(Object.entries(storyPairs).map(([feedId, storyId]) => [storyId, feedId]));
                   const blockedAdSets = usingExistingAdSet
                     ? selectedAdSetIds
                         .map(id => existingAdSets.find(a => a.id === id))
                         .filter(a => a && classifyAdSetDestination(a.destination_type, a.optimization_goal).isMultiDest)
                     : [];
                   const placementsSupported = !isAutoMsgDest && !isLeadFormDest;
-                  const formatBadge = (m) => {
-                    const isStory = m.placement === 'story';
-                    return (
-                      <span style={{ fontSize: '8px', fontWeight: '800', padding: '1px 4px', borderRadius: '3px', background: isStory ? 'rgba(139,92,246,0.85)' : 'rgba(16,185,129,0.85)', color: 'white', letterSpacing: '0.3px' }}>
-                        {isStory ? 'STORIES' : 'FEED'}{aspectLabel(m.width, m.height) ? ` ${aspectLabel(m.width, m.height)}` : ''}
-                      </span>
-                    );
+                  const MEDIA_DRAG_TYPE = 'application/x-venza-media';
+                  const isFileDrag = (e) => Array.from(e.dataTransfer?.types || []).includes('Files');
+                  const acceptsDrop = (e) => isFileDrag(e) || Array.from(e.dataTransfer?.types || []).includes(MEDIA_DRAG_TYPE);
+                  const typeLabel = (m) => (m.type === 'VIDEO' ? 'vídeo' : 'imagem');
+
+                  // Coloca uma mídia já enviada no lugar vazio de um anúncio.
+                  const placeMedia = (unit, role, mediaId) => {
+                    const media = mediaById[mediaId];
+                    if (!media || media.id === unit.id) return;
+                    if (media.type !== unit.type) {
+                      setError(`Feed e Stories do mesmo anúncio precisam ser do mesmo tipo: este anúncio é ${typeLabel(unit)} e a mídia escolhida é ${typeLabel(media)}.`);
+                      return;
+                    }
+                    setError(null);
+                    if (role === 'story') linkPair(unit.id, media.id);
+                    else linkPair(media.id, unit.id);
+                    setSlotPicker(null);
                   };
-                  // Escolha da versão 9:16 de um anúncio: mesma mídia (imagem/vídeo)
-                  // que não seja ela própria um anúncio com Stories já pareado.
-                  const storyPicker = (unit) => {
-                    const current = storyPairs[unit.id] || '';
-                    const candidates = mediaFiles.filter(m =>
-                      m.id !== unit.id && m.type === unit.type && !storyPairs[m.id] && (!feedOfStory[m.id] || feedOfStory[m.id] === unit.id)
-                    );
-                    return (
-                      <select
-                        value={current}
-                        onChange={e => pairStory(unit.id, e.target.value)}
-                        style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', border: `1px solid ${current ? 'rgba(139,92,246,0.5)' : 'var(--border-main)'}`, background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '11px', outline: 'none' }}
-                      >
-                        <option value="">Sem versão Stories (só feed)</option>
-                        {candidates.map(m => (
-                          <option key={m.id} value={m.id}>{m.placement === 'story' ? '9:16 · ' : ''}{m.file.name}</option>
-                        ))}
-                      </select>
-                    );
+                  const openSlotUpload = (unit, role) => {
+                    slotUploadTarget.current = { mediaId: unit.id, role };
+                    setSlotPicker(null);
+                    slotUploadRef.current?.click();
                   };
-                  const formatModeControl = (
-                    <div style={{ width: '100%', maxWidth: '520px', padding: '12px', borderRadius: '12px', border: '1px solid var(--border-light)', background: 'var(--bg-surface)' }}>
-                      <div style={{ fontSize: '11px', fontWeight: '800', color: 'var(--text-main)', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.4px' }}>Formato nos posicionamentos</div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                        <button type="button" onClick={() => setPreserveOriginalMedia(true)} style={{ padding: '9px 10px', borderRadius: '8px', border: `1px solid ${preserveOriginalMedia ? '#10b981' : 'var(--border-main)'}`, background: preserveOriginalMedia ? 'rgba(16,185,129,0.1)' : 'transparent', color: preserveOriginalMedia ? '#34d399' : 'var(--text-muted)', fontSize: '11px', fontWeight: '800', cursor: 'pointer' }}>Original · sem corte</button>
-                        <button type="button" onClick={() => setPreserveOriginalMedia(false)} style={{ padding: '9px 10px', borderRadius: '8px', border: `1px solid ${!preserveOriginalMedia ? '#2f80ff' : 'var(--border-main)'}`, background: !preserveOriginalMedia ? 'rgba(47,128,255,0.1)' : 'transparent', color: !preserveOriginalMedia ? '#93c5fd' : 'var(--text-muted)', fontSize: '11px', fontWeight: '800', cursor: 'pointer' }}>Meta adapta automaticamente</button>
+                  const dropHandlers = (key, onDropFiles, onDropMedia) => ({
+                    onDragOver: (e) => { if (!acceptsDrop(e)) return; e.preventDefault(); e.stopPropagation(); if (dropTarget !== key) setDropTarget(key); },
+                    onDragLeave: (e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDropTarget(current => (current === key ? null : current)); },
+                    onDrop: (e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setDropTarget(null);
+                      if (e.dataTransfer.files?.length) onDropFiles?.(e.dataTransfer.files);
+                      else if (onDropMedia) onDropMedia(e.dataTransfer.getData(MEDIA_DRAG_TYPE));
+                    },
+                  });
+
+                  const mediaThumb = (m, fit = 'cover') => (m.thumbnailBase64 || m.type === 'IMAGE'
+                    ? <img src={m.thumbnailBase64 || m.preview} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: fit, display: 'block' }} />
+                    : <video src={m.preview} muted preload="metadata" playsInline style={{ width: '100%', height: '100%', objectFit: fit, display: 'block' }} />);
+
+                  const iconButton = (title, onClick, icon, tone = 'var(--text-muted)') => (
+                    <button type="button" title={title} aria-label={title} onClick={(e) => { e.stopPropagation(); onClick(); }}
+                      style={{ width: '26px', height: '26px', borderRadius: '7px', border: '1px solid var(--border-light)', background: 'var(--bg-app)', color: tone, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      {icon}
+                    </button>
+                  );
+
+                  // Lugar do Feed ou do Stories dentro do cartão do anúncio.
+                  const renderSlot = (unit, role, media) => {
+                    const key = `${unit.id}:${role}`;
+                    const isStory = role === 'story';
+                    const width = isStory ? 68 : 96;
+                    const label = isStory ? 'Stories / Reels' : 'Feed';
+                    const highlight = dropTarget === key;
+                    if (media) {
+                      const ratio = aspectLabel(media.width, media.height);
+                      const mismatch = isStory ? media.placement !== 'story' : media.placement === 'story';
+                      return (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', width: `${width}px`, flexShrink: 0 }}>
+                          <div
+                            draggable
+                            onDragStart={(e) => { e.dataTransfer.setData(MEDIA_DRAG_TYPE, media.id); e.dataTransfer.effectAllowed = 'move'; }}
+                            title={`${media.file.name} — arraste para o lugar vazio de outro anúncio`}
+                            style={{ position: 'relative', width: '100%', height: '120px', borderRadius: '8px', overflow: 'hidden', background: '#000', cursor: 'grab', border: `2px solid ${isStory ? 'rgba(139,92,246,0.55)' : 'rgba(16,185,129,0.55)'}` }}
+                          >
+                            {mediaThumb(media)}
+                            <span style={{ position: 'absolute', top: '4px', left: '4px', fontSize: '8px', fontWeight: '800', padding: '2px 5px', borderRadius: '4px', background: isStory ? 'rgba(139,92,246,0.9)' : 'rgba(16,185,129,0.9)', color: 'white' }}>
+                              {ratio || (isStory ? '9:16' : 'FEED')}
+                            </span>
+                            <button type="button" title={`Remover ${media.file.name}`} aria-label={`Remover ${media.file.name}`}
+                              onClick={(e) => { e.stopPropagation(); removeMedia(media.id); }}
+                              style={{ position: 'absolute', top: '4px', right: '4px', width: '22px', height: '22px', borderRadius: '50%', border: '1px solid rgba(255,255,255,0.35)', background: 'rgba(0,0,0,0.65)', color: 'white', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                              <X size={12} />
+                            </button>
+                          </div>
+                          <span style={{ fontSize: '10px', fontWeight: '700', color: isStory ? '#c4b5fd' : '#34d399', textAlign: 'center' }}>{label}</span>
+                          {mismatch && ratio && <span style={{ fontSize: '9px', color: '#f59e0b', textAlign: 'center', lineHeight: 1.2 }}>{isStory ? 'não é 9:16' : 'é vertical 9:16'}</span>}
+                        </div>
+                      );
+                    }
+                    const pickerOpen = slotPicker?.unitId === unit.id && slotPicker?.role === role;
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', width: `${width}px`, flexShrink: 0 }}>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); setSlotPicker(pickerOpen ? null : { unitId: unit.id, role }); }}
+                          {...dropHandlers(key, (files) => addMediaFiles(files, { pairTo: { mediaId: unit.id, role } }), (mediaId) => placeMedia(unit, role, mediaId))}
+                          title={`Adicionar a versão ${label} deste anúncio`}
+                          style={{ width: '100%', height: '120px', borderRadius: '8px', border: `2px dashed ${highlight ? '#2f80ff' : isStory ? 'rgba(139,92,246,0.45)' : 'rgba(16,185,129,0.45)'}`, background: highlight ? 'rgba(47,128,255,0.10)' : 'transparent', color: isStory ? '#c4b5fd' : '#34d399', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px', fontSize: '10px', fontWeight: '800', padding: '6px' }}
+                        >
+                          <Plus size={16} />
+                          {isStory ? 'Stories 9:16' : 'Feed 4:5'}
+                          <span style={{ fontSize: '9px', fontWeight: '600', color: 'var(--text-muted)' }}>opcional</span>
+                        </button>
+                        <span style={{ fontSize: '10px', fontWeight: '700', color: 'var(--text-muted)', textAlign: 'center' }}>{label}</span>
                       </div>
-                      <p style={{ margin: '8px 0 0', fontSize: '10px', lineHeight: 1.5, color: 'var(--text-muted)' }}>No modo original, o sistema desativa corte, expansão e retoques automáticos. Para Stories/Reels em tela cheia, envie também uma versão 9:16.</p>
+                    );
+                  };
+
+                  // Lista para escolher a mídia de um lugar vazio.
+                  const renderSlotPicker = (unit) => {
+                    if (slotPicker?.unitId !== unit.id) return null;
+                    const role = slotPicker.role;
+                    const wanted = role === 'story' ? 'story' : 'feed';
+                    const candidates = mediaFiles
+                      .filter(m => m.id !== unit.id && m.type === unit.type && !storyPairs[m.id] && !pairedStoryIds.has(m.id))
+                      .sort((a, b) => Number(b.placement === wanted) - Number(a.placement === wanted));
+                    return (
+                      <div ref={revealOnMount} onClick={e => e.stopPropagation()} style={{ marginTop: '8px', padding: '8px', borderRadius: '8px', border: '1px solid var(--border-main)', background: 'var(--bg-app)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px', fontWeight: '800', color: 'var(--text-main)' }}>
+                          <span>Versão {role === 'story' ? 'Stories / Reels' : 'Feed'} deste anúncio</span>
+                          <button type="button" onClick={() => setSlotPicker(null)} aria-label="Fechar" style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: '2px' }}><X size={14} /></button>
+                        </div>
+                        {candidates.length > 0 ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '180px', overflowY: 'auto' }}>
+                            {candidates.map(m => (
+                              <button type="button" key={m.id} onClick={() => placeMedia(unit, role, m.id)}
+                                style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '5px', borderRadius: '6px', border: '1px solid var(--border-light)', background: 'var(--bg-surface)', color: 'var(--text-main)', cursor: 'pointer', textAlign: 'left' }}>
+                                <span style={{ width: '28px', height: '36px', borderRadius: '4px', overflow: 'hidden', background: '#000', flexShrink: 0 }}>{mediaThumb(m)}</span>
+                                <span style={{ flex: 1, minWidth: 0, fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.file.name}</span>
+                                <span style={{ fontSize: '9px', fontWeight: '800', color: m.placement === 'story' ? '#c4b5fd' : '#34d399' }}>{aspectLabel(m.width, m.height) || (m.placement === 'story' ? '9:16' : 'FEED')}</span>
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Nenhum{unit.type === 'VIDEO' ? ' vídeo' : 'a imagem'} solto no lote. Envie o arquivo abaixo.</span>
+                        )}
+                        <button type="button" onClick={() => openSlotUpload(unit, role)}
+                          style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', padding: '7px', borderRadius: '6px', border: '1px dashed var(--border-main)', background: 'transparent', color: 'var(--primary)', fontSize: '11px', fontWeight: '800', cursor: 'pointer' }}>
+                          <UploadCloud size={13} /> Enviar arquivo do computador
+                        </button>
+                      </div>
+                    );
+                  };
+
+                  const renderAdCard = (unit, index) => {
+                    const story = storyOf(unit.id);
+                    const feedMedia = story ? unit : (unit.placement === 'story' ? null : unit);
+                    const storyMedia = story || (unit.placement === 'story' ? unit : null);
+                    const isActive = individualCopyMode && unit.id === activeId;
+                    const hasOwnCopy = Object.keys(adCopyOverrides[unit.id] || {}).length > 0;
+                    const files = [feedMedia, storyMedia].filter(Boolean);
+                    return (
+                      <div key={unit.id}
+                        onClick={() => { if (individualCopyMode) setActiveCopyFileId(unit.id); }}
+                        style={{ padding: '10px', borderRadius: '12px', border: `${isActive ? 2 : 1}px solid ${isActive ? 'var(--primary)' : story ? 'rgba(139,92,246,0.35)' : 'var(--border-light)'}`, background: 'var(--bg-surface)', cursor: individualCopyMode ? 'pointer' : 'default', display: 'flex', flexDirection: 'column', gap: '8px', minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+                          <span style={{ fontSize: '12px', fontWeight: '800', color: 'var(--primary)', whiteSpace: 'nowrap' }}>{resolveAdName(adsData.namingPattern, index + 1)}</span>
+                          <span style={{ fontSize: '9px', fontWeight: '800', color: unit.type === 'VIDEO' ? '#34d399' : '#60a5fa', background: unit.type === 'VIDEO' ? 'rgba(16,185,129,0.12)' : 'rgba(24,119,242,0.12)', padding: '2px 6px', borderRadius: '4px' }}>{unit.type === 'VIDEO' ? 'VÍDEO' : 'IMAGEM'}</span>
+                          {hasOwnCopy && <span title="Este anúncio tem texto próprio" style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#10b981', flexShrink: 0 }} />}
+                          <div style={{ marginLeft: 'auto', display: 'flex', gap: '4px' }}>
+                            {iconButton('Texto próprio deste anúncio', () => { setIndividualCopyMode(true); setActiveCopyFileId(unit.id); }, <Pencil size={13} />, hasOwnCopy ? '#10b981' : 'var(--text-muted)')}
+                            {story && iconButton('Inverter Feed e Stories', () => swapPair(unit.id), <ArrowLeftRight size={13} />)}
+                            {story && iconButton('Separar em dois anúncios', () => unlinkPair(unit.id), <Unlink size={13} />)}
+                            {iconButton('Apagar este anúncio', () => removeAd(unit.id), <Trash2 size={13} />, '#ef4444')}
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+                          {renderSlot(unit, 'feed', feedMedia)}
+                          {renderSlot(unit, 'story', storyMedia)}
+                        </div>
+                        {renderSlotPicker(unit)}
+                        <div style={{ fontSize: '10px', color: 'var(--text-muted)', lineHeight: 1.4, minWidth: 0 }}>
+                          {files.map(m => (
+                            <div key={m.id} title={m.file.name} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {m.file.name} · {formatMb(m.file.size)}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  };
+
+                  const formatModeControl = (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)' }}>Enquadramento:</span>
+                      <div style={{ display: 'flex', background: 'var(--bg-surface)', border: '1px solid var(--border-light)', borderRadius: '8px', padding: '2px' }}>
+                        {[[true, 'Original, sem corte'], [false, 'Meta adapta']].map(([value, text]) => (
+                          <button key={text} type="button" onClick={() => setPreserveOriginalMedia(value)}
+                            title={value ? 'Desliga corte, expansão e retoques automáticos da Meta' : 'A Meta pode cortar e ajustar a mídia em cada posicionamento'}
+                            style={{ padding: '5px 10px', borderRadius: '6px', border: 'none', fontSize: '11px', fontWeight: '700', cursor: 'pointer', background: preserveOriginalMedia === value ? 'var(--bg-app)' : 'transparent', color: preserveOriginalMedia === value ? 'var(--text-main)' : 'var(--text-muted)', boxShadow: preserveOriginalMedia === value ? '0 1px 4px rgba(0,0,0,0.15)' : 'none' }}>
+                            {text}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                  const uploadInputs = (
+                      <input ref={slotUploadRef} type="file" accept="image/jpeg,image/png,image/webp,video/*" style={{ display: 'none' }}
+                        onChange={(e) => { const pairTo = slotUploadTarget.current; slotUploadTarget.current = null; handleFileUpload(e, { pairTo }); }} />
+                  );
+                  const addButtons = (big = false) => (
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: big ? 'center' : 'flex-start' }}>
+                      <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: big ? '10px 18px' : '7px 12px', borderRadius: '8px', background: 'linear-gradient(135deg, #1877F2, #0056d6)', color: 'white', fontSize: big ? '13px' : '12px', fontWeight: '800', cursor: 'pointer' }}>
+                        <input type="file" multiple accept="image/jpeg,image/png,image/webp,video/*" style={{ display: 'none' }} onChange={handleFileUpload} />
+                        <Plus size={14} /> Adicionar mídias
+                      </label>
+                      <label title="Seleciona todos os vídeos e imagens de uma pasta" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: big ? '10px 18px' : '7px 12px', borderRadius: '8px', border: '1px solid var(--border-main)', color: 'var(--text-main)', fontSize: big ? '13px' : '12px', fontWeight: '700', cursor: 'pointer' }}>
+                        <input type="file" multiple style={{ display: 'none' }} {...{ webkitdirectory: '' }} onChange={handleFileUpload} />
+                        <FolderOpen size={14} /> Pasta inteira
+                      </label>
                     </div>
                   );
 
                   /* Empty state */
                   if (mediaFiles.length === 0) return (
-                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '24px' }}>
-                      {formatModeControl}
-                      <label style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '16px', cursor: 'pointer', padding: '48px 60px', borderRadius: '20px', border: '2px dashed rgba(16,185,129,0.35)', background: 'rgba(16,185,129,0.04)', transition: 'all 0.2s', width: '100%', maxWidth: '420px', boxSizing: 'border-box' }}
-                        onMouseEnter={e => { e.currentTarget.style.borderColor = 'rgba(16,185,129,0.7)'; e.currentTarget.style.background = 'rgba(16,185,129,0.08)'; }}
-                        onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(16,185,129,0.35)'; e.currentTarget.style.background = 'rgba(16,185,129,0.04)'; }}
-                      >
-                        <input type="file" multiple accept="image/jpeg,image/png,image/webp,video/*" style={{ display: 'none' }} onChange={handleFileUpload} />
-                        <div style={{ width: '72px', height: '72px', borderRadius: '20px', background: 'linear-gradient(135deg, rgba(16,185,129,0.15), rgba(24,119,242,0.15))', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                          <UploadCloud size={36} color="var(--primary)" />
-                        </div>
-                        <div style={{ textAlign: 'center' }}>
-                          <div style={{ fontSize: '18px', fontWeight: '800', color: 'var(--text-main)', marginBottom: '6px' }}>Arraste ou clique para fazer upload</div>
-                          <div style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: 1.5 }}>Imagens JPG/PNG ou vídeos em qualquer formato · até 50 arquivos</div>
-                        </div>
-                      </label>
-                      <div style={{ display: 'flex', gap: '24px', alignItems: 'center' }}>
-                        {[['🖼️', 'Imagens', 'JPG, PNG, WEBP'], ['🎬', 'Vídeos', 'MP4, MOV, HEVC · sem converter'], ['📦', 'Lote', 'até 50 de uma vez']].map(([icon, title, sub]) => (
-                          <div key={title} style={{ textAlign: 'center' }}>
-                            <div style={{ fontSize: '22px', marginBottom: '4px' }}>{icon}</div>
-                            <div style={{ fontSize: '12px', fontWeight: '700', color: 'var(--text-main)' }}>{title}</div>
-                            <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{sub}</div>
-                          </div>
-                        ))}
+                    <div
+                      {...dropHandlers('panel', (files) => addMediaFiles(files))}
+                      style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '20px', borderRadius: '16px', border: `2px dashed ${dropTarget === 'panel' ? '#2f80ff' : 'rgba(16,185,129,0.35)'}`, background: dropTarget === 'panel' ? 'rgba(47,128,255,0.06)' : 'rgba(16,185,129,0.03)', padding: '24px' }}
+                    >
+                      {uploadInputs}
+                      <div style={{ width: '72px', height: '72px', borderRadius: '20px', background: 'linear-gradient(135deg, rgba(16,185,129,0.15), rgba(24,119,242,0.15))', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <UploadCloud size={36} color="var(--primary)" />
                       </div>
+                      <div style={{ textAlign: 'center' }}>
+                        <div style={{ fontSize: '18px', fontWeight: '800', color: 'var(--text-main)', marginBottom: '6px' }}>Arraste os arquivos ou a pasta para cá</div>
+                        <div style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: 1.5, maxWidth: '460px' }}>
+                          Imagens JPG, PNG, WEBP e vídeos MP4, MOV ou HEVC, sem converter. Até {MAX_ADS_PER_BATCH} anúncios por lote ({MAX_MEDIA_FILES} arquivos com Feed + Stories).
+                          Arquivos com o mesmo nome e marcação de formato (ex.: <em>video1_feed</em> e <em>video1_stories</em>) viram um anúncio só.
+                        </div>
+                      </div>
+                      {addButtons(true)}
+                      {formatModeControl}
                     </div>
                   );
 
                   return (
                   <div style={{ display: 'flex', gap: '0', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+                    {uploadInputs}
 
-                    {/* ── Faixa de thumbnails (lateral esquerda) ── */}
-                    <div style={{ width: individualCopyMode ? '88px' : '160px', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto', paddingRight: '10px', borderRight: '1px solid var(--border-light)', marginRight: '16px' }}>
-                      {formatModeControl}
-                      <label style={{ background: 'var(--bg-surface)', border: '2px dashed rgba(16,185,129,0.3)', borderRadius: '10px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', padding: '10px 6px', flexShrink: 0, gap: '4px' }}>
-                        <input type="file" multiple accept="image/jpeg,image/png,image/webp,video/*" style={{ display: 'none' }} onChange={handleFileUpload} />
-                        <UploadCloud size={18} color="var(--primary)" />
-                        <span style={{ fontSize: '9px', fontWeight: '700', color: 'var(--primary)', textAlign: 'center', lineHeight: 1.2 }}>Upload ({mediaFiles.length})</span>
-                      </label>
-
-                      {mediaFiles.map((m) => {
-                        const pairedFeedId = feedOfStory[m.id];
-                        const unitIdx = unitIndexById[pairedFeedId || m.id];
-                        const isActive = individualCopyMode && (m.id === activeId || pairedFeedId === activeId);
-                        const hasAny = Object.keys(adCopyOverrides[pairedFeedId || m.id] || {}).length > 0;
-                        return (
-                          <div key={m.id}
-                            title={pairedFeedId ? `Versão Stories do AD${String(unitIdx + 1).padStart(2, '0')}` : m.file.name}
-                            onClick={() => { if (individualCopyMode) setActiveCopyFileId(pairedFeedId || m.id); }}
-                            style={{ position: 'relative', borderRadius: '8px', overflow: 'hidden', background: '#000', aspectRatio: '1/1', flexShrink: 0, cursor: individualCopyMode ? 'pointer' : 'default', border: isActive ? '2px solid var(--primary)' : '2px solid transparent', boxShadow: isActive ? '0 0 0 2px rgba(16,185,129,0.3)' : 'none', transition: 'all 0.15s' }}
-                          >
-                            {m.type === 'IMAGE'
-                              ? <img src={m.preview} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: isActive ? 1 : 0.7 }} />
-                              : <video src={m.preview} muted preload="metadata" playsInline style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: isActive ? 1 : 0.7 }} />}
-                            {/* Formato (Feed / Stories) */}
-                            <div style={{ position: 'absolute', top: '3px', left: '3px' }}>{formatBadge(m)}</div>
-                            {/* Badge número */}
-                            <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: '3px 5px', background: 'linear-gradient(to top, rgba(0,0,0,0.8), transparent)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-                              <span style={{ color: isActive ? '#34d399' : pairedFeedId ? '#c4b5fd' : 'white', fontSize: '9px', fontWeight: '800' }}>{pairedFeedId ? '↳ ' : ''}AD{String(unitIdx + 1).padStart(2, '0')}{pairedFeedId ? ' · Stories' : storyPairs[m.id] ? ' · Feed' : ''}</span>
-                              {hasAny && <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981', flexShrink: 0 }} />}
-                            </div>
-                            {/* Botão remover */}
-                            <button onClick={e => { e.stopPropagation(); removeMedia(m.id); }} style={{ position: 'absolute', top: '3px', right: '3px', background: 'rgba(239,68,68,0.85)', border: 'none', color: 'white', borderRadius: '50%', width: '16px', height: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', opacity: 0, transition: 'opacity 0.15s' }}
-                              onMouseEnter={e => e.currentTarget.style.opacity = 1}
-                              onMouseLeave={e => e.currentTarget.style.opacity = 0}
-                            >
-                              <X size={9} />
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-
-                    {/* ── Preview grande do anúncio ativo (só no modo individual) ── */}
-                    {individualCopyMode && activeMedia && (
-                      <div style={{ width: '230px', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: '8px', marginRight: '16px', overflowY: 'auto' }}>
-                        <div style={{ fontSize: '10px', fontWeight: '800', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                          Preview — AD{String(activeIdx + 1).padStart(2, '0')}
+                    {/* ── Mídias: um cartão por anúncio, com Feed e Stories ── */}
+                    <div
+                      {...dropHandlers('panel', (files) => addMediaFiles(files))}
+                      onClick={() => setSlotPicker(null)}
+                      style={{ flex: 1.25, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '10px', overflowY: 'auto', paddingRight: '14px', borderRadius: '10px', outline: dropTarget === 'panel' ? '2px dashed #2f80ff' : 'none', outlineOffset: '-2px', background: dropTarget === 'panel' ? 'rgba(47,128,255,0.04)' : 'transparent' }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', position: 'sticky', top: 0, zIndex: 2, background: 'var(--bg-app)', paddingBottom: '8px', borderBottom: '1px solid var(--border-light)' }}>
+                        {addButtons()}
+                        <span style={{ fontSize: '12px', color: adUnits.length > MAX_ADS_PER_BATCH ? '#ef4444' : 'var(--text-muted)', fontWeight: '700' }}>
+                          {adUnits.length}/{MAX_ADS_PER_BATCH} anúncio{adUnits.length !== 1 ? 's' : ''} · {mediaFiles.length} arquivo{mediaFiles.length !== 1 ? 's' : ''}
+                          {pairedStoryIds.size > 0 ? ` · ${pairedStoryIds.size} com Feed + Stories` : ''}
+                        </span>
+                        <button type="button" onClick={clearAllMedia}
+                          style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '6px 10px', borderRadius: '8px', border: '1px solid rgba(239,68,68,0.35)', background: 'transparent', color: '#ef4444', fontSize: '11px', fontWeight: '700', cursor: 'pointer' }}>
+                          <Trash2 size={13} /> Limpar tudo
+                        </button>
+                        <div style={{ flexBasis: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
+                          {formatModeControl}
+                          <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Arraste uma mídia para o lugar vazio de outro anúncio para juntar Feed + Stories.</span>
                         </div>
-                        <div style={{ borderRadius: '10px', overflow: 'hidden', border: '2px solid var(--primary)', background: '#000', aspectRatio: '4/5', width: '100%', position: 'relative' }}>
-                          {activeMedia.type === 'IMAGE'
-                            ? <img src={activeMedia.preview} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-                            : <video src={activeMedia.preview} controls muted playsInline style={{ width: '100%', height: '100%', objectFit: 'contain' }} />}
-                        </div>
-                        <div style={{ fontSize: '11px', color: 'var(--text-muted)', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={activeMedia.file.name}>
-                          {activeMedia.file.name}
-                        </div>
-                        <div style={{ fontSize: '10px', color: 'var(--text-muted)', textAlign: 'center' }}>
-                          {activeMedia.type} · {(activeMedia.file.size / 1024 / 1024).toFixed(1)} MB{aspectLabel(activeMedia.width, activeMedia.height) ? ` · ${aspectLabel(activeMedia.width, activeMedia.height)}` : ''}
-                        </div>
-                        <div>
-                          <div style={{ fontSize: '10px', fontWeight: '800', color: '#c4b5fd', textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '4px' }}>Versão Stories / Reels</div>
-                          {storyPicker(activeMedia)}
-                        </div>
-                        {/* Navegação rápida */}
-                        <div style={{ display: 'flex', gap: '6px', justifyContent: 'center' }}>
-                          <button onClick={() => { const prev = adUnits[activeIdx - 1]; if (prev) setActiveCopyFileId(prev.id); }}
-                            disabled={activeIdx === 0}
-                            style={{ flex: 1, padding: '5px', borderRadius: '6px', border: '1px solid var(--border-main)', background: 'transparent', color: activeIdx === 0 ? 'var(--border-main)' : 'var(--text-muted)', cursor: activeIdx === 0 ? 'not-allowed' : 'pointer', fontSize: '14px', fontWeight: '700' }}>
-                            ‹
-                          </button>
-                          <span style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', fontWeight: '600' }}>{activeIdx + 1}/{adUnits.length}</span>
-                          <button onClick={() => { const next = adUnits[activeIdx + 1]; if (next) setActiveCopyFileId(next.id); }}
-                            disabled={activeIdx === adUnits.length - 1}
-                            style={{ flex: 1, padding: '5px', borderRadius: '6px', border: '1px solid var(--border-main)', background: 'transparent', color: activeIdx === adUnits.length - 1 ? 'var(--border-main)' : 'var(--text-muted)', cursor: activeIdx === adUnits.length - 1 ? 'not-allowed' : 'pointer', fontSize: '14px', fontWeight: '700' }}>
-                            ›
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Esquerda: area de upload no modo global (quando não individual) */}
-                    {!individualCopyMode && (
-                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto', minWidth: 0 }}>
-                      <h3 style={{ fontSize: '17px', fontWeight: '700', color: 'var(--text-main)', flexShrink: 0 }}>Criativos — até 50 mídias</h3>
-                      <div style={{ fontSize: '11px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                        Envie a versão de <strong style={{ color: '#34d399' }}>Feed</strong> (1:1 ou 4:5) e a de <strong style={{ color: '#c4b5fd' }}>Stories/Reels</strong> (9:16) do mesmo criativo: o sistema junta as duas no mesmo anúncio e a Meta mostra cada uma no lugar certo. O pareamento é automático pelo nome do arquivo — confira abaixo.
                       </div>
                       {placementsSupported && blockedAdSets.length > 0 && pairedStoryIds.size > 0 && (
                         <div style={{ fontSize: '11px', color: '#f59e0b', padding: '8px 10px', borderRadius: '8px', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)' }}>
@@ -3526,30 +3781,15 @@ ${rows.map(r => `<tr>
                           Feed + Stories só funciona com destino site. Neste destino (mensagens/formulário) vai só a versão de feed.
                         </div>
                       )}
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        {adUnits.map((unit, i) => {
-                          const story = storyOf(unit.id);
-                          return (
-                            <div key={unit.id} style={{ display: 'grid', gridTemplateColumns: '44px 1fr', gap: '10px', alignItems: 'center', padding: '8px', borderRadius: '10px', border: `1px solid ${story ? 'rgba(139,92,246,0.35)' : 'var(--border-light)'}`, background: 'var(--bg-surface)' }}>
-                              <div style={{ width: '44px', height: '44px', borderRadius: '6px', overflow: 'hidden', background: '#000' }}>
-                                {unit.type === 'IMAGE'
-                                  ? <img src={unit.preview} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                                  : <video src={unit.preview} muted preload="metadata" playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
-                              </div>
-                              <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
-                                  <span style={{ fontSize: '11px', fontWeight: '800', color: 'var(--primary)' }}>{resolveAdName(adsData.namingPattern, i + 1)}</span>
-                                  {formatBadge(unit)}
-                                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={unit.file.name}>{unit.file.name}</span>
-                                </div>
-                                {storyPicker(unit)}
-                              </div>
-                            </div>
-                          );
-                        })}
+                      {adUnits.length > MAX_ADS_PER_BATCH && (
+                        <div style={{ fontSize: '11px', color: '#ef4444', padding: '8px 10px', borderRadius: '8px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)', fontWeight: '600' }}>
+                          A Meta aceita até {MAX_ADS_PER_BATCH} anúncios por conjunto. Junte versões Feed + Stories ou apague {adUnits.length - MAX_ADS_PER_BATCH} anúncio(s).
+                        </div>
+                      )}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '10px' }}>
+                        {adUnits.map((unit, index) => renderAdCard(unit, index))}
                       </div>
                     </div>
-                    )}
 
                     {/* Direita: Copy */}
                     <div style={{ flex: 1, minWidth: 0, borderLeft: '1px solid var(--border-light)', paddingLeft: '20px', display: 'flex', flexDirection: 'column', gap: '14px', overflowY: 'auto' }}>
@@ -3625,12 +3865,12 @@ ${rows.map(r => `<tr>
                       )}
                       <div style={{ height: '1px', background: 'var(--border-light)' }} />
 
-                      {/* ── Toggle copy global / individual ── */}
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <span style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Copy dos Anúncios</span>
+                      {/* ── Mesmo texto para todos x texto por anúncio ── */}
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Textos dos anúncios</span>
                         <div style={{ display: 'flex', background: 'var(--bg-surface)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '2px' }}>
-                          {[['global', 'Global'], ['individual', 'Por Anúncio']].map(([v, l]) => (
-                            <button key={v} onClick={() => {
+                          {[['global', 'Iguais para todos'], ['individual', 'Por anúncio']].map(([v, l]) => (
+                            <button key={v} type="button" onClick={() => {
                               const toIndividual = v === 'individual';
                               setIndividualCopyMode(toIndividual);
                               if (toIndividual && !activeCopyFileId && adUnits.length > 0) setActiveCopyFileId(adUnits[0].id);
@@ -3641,44 +3881,58 @@ ${rows.map(r => `<tr>
                         </div>
                       </div>
 
-                      {/* ── Campos individuais por anúncio ── */}
-                      {individualCopyMode && mediaFiles.length > 0 && (() => {
+                      {/* ── Texto próprio do anúncio selecionado ── */}
+                      {individualCopyMode && activeMedia && (() => {
                         const overrides = adCopyOverrides[activeId] || {};
                         const hasOverride = (f) => overrides[f] !== undefined;
                         const getVal = (f) => hasOverride(f) ? overrides[f] : adsData[f];
                         const setVal = (f, v) => setAdCopyOverrides(prev => ({ ...prev, [activeId]: { ...prev[activeId], [f]: v } }));
                         const clearVal = (f) => setAdCopyOverrides(prev => { const c = { ...prev[activeId] }; delete c[f]; return { ...prev, [activeId]: c }; });
+                        const navButton = (disabled) => ({ width: '26px', height: '26px', borderRadius: '6px', border: '1px solid var(--border-main)', background: 'transparent', color: disabled ? 'var(--border-main)' : 'var(--text-muted)', cursor: disabled ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' });
 
                         return (
                           <>
-                            {/* Label do ad ativo */}
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 10px', background: 'rgba(16,185,129,0.08)', borderRadius: '8px', border: '1px solid rgba(16,185,129,0.2)' }}>
-                              <span style={{ fontSize: '12px', fontWeight: '700', color: 'var(--primary)' }}>
-                                {resolveAdName(adsData.namingPattern, activeIdx + 1)}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', background: 'rgba(16,185,129,0.08)', borderRadius: '8px', border: '1px solid rgba(16,185,129,0.2)' }}>
+                              <span style={{ width: '30px', height: '38px', borderRadius: '4px', overflow: 'hidden', background: '#000', flexShrink: 0 }}>
+                                {activeMedia.thumbnailBase64 || activeMedia.type === 'IMAGE'
+                                  ? <img src={activeMedia.thumbnailBase64 || activeMedia.preview} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                  : <video src={activeMedia.preview} muted preload="metadata" playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
                               </span>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: '12px', fontWeight: '800', color: 'var(--primary)' }}>{resolveAdName(adsData.namingPattern, activeIdx + 1)}</div>
+                                <div style={{ fontSize: '10px', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activeMedia.file.name}</div>
+                              </div>
+                              <button type="button" aria-label="Anúncio anterior" disabled={activeIdx <= 0} onClick={() => setActiveCopyFileId(adUnits[activeIdx - 1]?.id)} style={navButton(activeIdx <= 0)}><ChevronLeft size={14} /></button>
+                              <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: '600' }}>{activeIdx + 1}/{adUnits.length}</span>
+                              <button type="button" aria-label="Próximo anúncio" disabled={activeIdx >= adUnits.length - 1} onClick={() => setActiveCopyFileId(adUnits[activeIdx + 1]?.id)} style={navButton(activeIdx >= adUnits.length - 1)}><ChevronRight size={14} /></button>
                               {Object.keys(overrides).length > 0 && (
-                                <button onClick={() => setAdCopyOverrides(prev => ({ ...prev, [activeId]: {} }))} style={{ fontSize: '10px', padding: '2px 7px', borderRadius: '4px', border: '1px solid var(--border-main)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}>
+                                <button type="button" onClick={() => setAdCopyOverrides(prev => ({ ...prev, [activeId]: {} }))} style={{ fontSize: '10px', padding: '3px 7px', borderRadius: '4px', border: '1px solid var(--border-main)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}>
                                   Resetar
                                 </button>
                               )}
                             </div>
+                            <p style={{ margin: '-6px 0 0', fontSize: '10px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                              Clique num cartão à esquerda para escolher o anúncio. Campo que você não mexer usa o texto de "Iguais para todos", com todas as opções; campo alterado vale só para este anúncio.
+                            </p>
 
-                            {/* Campos com override */}
                             {[
-                              { key: 'primaryText', label: 'Texto principal / copy', multiline: true },
-                              { key: 'title', label: 'Título / headline', multiline: false },
-                              { key: 'description', label: 'Descrição complementar', multiline: false },
+                              { key: 'primaryText', label: 'Texto principal', multiline: true },
+                              { key: 'title', label: 'Título', multiline: false },
+                              { key: 'description', label: 'Descrição', multiline: false },
                             ].map(({ key, label, multiline }) => (
                               <div key={key}>
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
-                                  <label style={{ fontSize: '11px', fontWeight: '700', color: hasOverride(key) ? '#10b981' : 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{label}</label>
+                                  <label style={{ fontSize: '11px', fontWeight: '700', color: hasOverride(key) ? '#10b981' : 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                    {label}
+                                    {!hasOverride(key) && textOptions(optionValues(key)).length > 1 && <span style={{ textTransform: 'none', fontWeight: '600', color: '#93c5fd' }}> · usando as {textOptions(optionValues(key)).length} opções gerais</span>}
+                                  </label>
                                   {hasOverride(key) && (
-                                    <button onClick={() => clearVal(key)} style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '3px', border: '1px solid rgba(16,185,129,0.3)', background: 'transparent', color: '#10b981', cursor: 'pointer' }}>← global</button>
+                                    <button type="button" onClick={() => clearVal(key)} style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '3px', border: '1px solid rgba(16,185,129,0.3)', background: 'transparent', color: '#10b981', cursor: 'pointer' }}>← usar o geral</button>
                                   )}
                                 </div>
                                 {multiline ? (
                                   <textarea rows={3} value={getVal(key)} onChange={e => setVal(key, e.target.value)}
-                                    style={{ width: '100%', padding: '10px 14px', borderRadius: '8px', border: `1px solid ${hasOverride(key) ? '#10b981' : 'var(--border-main)'}`, background: hasOverride(key) ? 'rgba(16,185,129,0.04)' : 'transparent', color: 'var(--text-main)', fontSize: '13px', outline: 'none', resize: 'none', boxSizing: 'border-box' }} />
+                                    style={{ width: '100%', padding: '10px 14px', borderRadius: '8px', border: `1px solid ${hasOverride(key) ? '#10b981' : 'var(--border-main)'}`, background: hasOverride(key) ? 'rgba(16,185,129,0.04)' : 'transparent', color: 'var(--text-main)', fontSize: '13px', outline: 'none', resize: 'vertical', boxSizing: 'border-box', fontFamily: 'inherit' }} />
                                 ) : (
                                   <input type="text" value={getVal(key)} onChange={e => setVal(key, e.target.value)}
                                     style={{ width: '100%', padding: '10px 14px', borderRadius: '8px', border: `1px solid ${hasOverride(key) ? '#10b981' : 'var(--border-main)'}`, background: hasOverride(key) ? 'rgba(16,185,129,0.04)' : 'transparent', color: 'var(--text-main)', fontSize: '13px', outline: 'none', boxSizing: 'border-box' }} />
@@ -3690,7 +3944,7 @@ ${rows.map(r => `<tr>
                               <div>
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
                                   <label style={{ fontSize: '11px', fontWeight: '700', color: hasOverride('link') ? '#10b981' : 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>URL</label>
-                                  {hasOverride('link') && <button onClick={() => clearVal('link')} style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '3px', border: '1px solid rgba(16,185,129,0.3)', background: 'transparent', color: '#10b981', cursor: 'pointer' }}>← global</button>}
+                                  {hasOverride('link') && <button type="button" onClick={() => clearVal('link')} style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '3px', border: '1px solid rgba(16,185,129,0.3)', background: 'transparent', color: '#10b981', cursor: 'pointer' }}>← usar o geral</button>}
                                 </div>
                                 <input type="text" value={getVal('link')} onChange={e => setVal('link', e.target.value)} placeholder="https://..." style={{ width: '100%', padding: '10px 14px', borderRadius: '8px', border: `1px solid ${hasOverride('link') ? '#10b981' : 'var(--border-main)'}`, background: hasOverride('link') ? 'rgba(16,185,129,0.04)' : 'transparent', color: 'var(--text-main)', fontSize: '13px', outline: 'none', boxSizing: 'border-box' }} />
                               </div>
@@ -3699,17 +3953,25 @@ ${rows.map(r => `<tr>
                         );
                       })()}
 
-                      {/* ── Copy global (visível no modo global) ── */}
+                      {/* ── Textos iguais para todos, com até 5 opções de cada ── */}
                       {!individualCopyMode && <>
-                      <div>
-                        <label style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '6px', display: 'block', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                          Texto principal / copy
-                        </label>
-                        <textarea rows={5} value={adsData.primaryText} placeholder="Ex.: Descubra como reduzir custos e ganhar previsibilidade na sua operação." onChange={e => setAdsData({ ...adsData, primaryText: e.target.value })} style={{ width: '100%', padding: '10px 14px', borderRadius: '8px', border: '1px solid var(--border-main)', background: 'transparent', color: 'var(--text-main)', fontSize: '13px', outline: 'none', resize: 'none', boxSizing: 'border-box' }} />
-                        <div style={{ marginTop: '5px', display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: 'var(--text-muted)' }}><span>Mensagem principal do anúncio.</span><span>{adsData.primaryText.length} caracteres</span></div>
-                      </div>
-                      <Field label="Título / headline" value={adsData.title} onChange={e => setAdsData({ ...adsData, title: e.target.value })} placeholder="Ex.: Planeje seus investimentos com segurança" />
-                      <Field label="Descrição complementar" value={adsData.description} onChange={e => setAdsData({ ...adsData, description: e.target.value })} placeholder="Ex.: Atendimento especializado e condições exclusivas." />
+                      <OptionsField label="Texto principal" multiline limit={TEXT_LIMITS.primaryText}
+                        placeholder="Ex.: Descubra como reduzir custos e ganhar previsibilidade na sua operação."
+                        values={optionValues('primaryText')} onChange={values => setOptionValues('primaryText', values)} />
+                      <OptionsField label="Título" limit={TEXT_LIMITS.title}
+                        placeholder="Ex.: Planeje seus investimentos com segurança"
+                        values={optionValues('title')} onChange={values => setOptionValues('title', values)} />
+                      <OptionsField label="Descrição" limit={TEXT_LIMITS.description}
+                        placeholder="Ex.: Atendimento especializado e condições exclusivas."
+                        values={optionValues('description')} onChange={values => setOptionValues('description', values)} />
+                      {usingTextVariations && (
+                        <div style={{ fontSize: '11px', lineHeight: 1.5, color: 'var(--text-muted)', padding: '9px 11px', borderRadius: '8px', background: 'rgba(47,128,255,0.06)', border: '1px solid rgba(47,128,255,0.25)' }}>
+                          A Meta testa as combinações e entrega a melhor para cada pessoa.
+                          {(isAutoMsgDest || isLeadFormDest)
+                            ? <strong style={{ color: '#f59e0b' }}> Neste destino (mensagens ou formulário) a Meta só aceita uma opção: vai a 1ª de cada campo.</strong>
+                            : pairedStoryIds.size > 0 && <strong style={{ color: '#f59e0b' }}> Anúncios com Feed + Stories aceitam uma opção de cada campo: neles vai a 1ª. Os demais levam todas.</strong>}
+                        </div>
+                      )}
                       <SelectField label="CTA (Call to Action)" value={adsData.cta} onChange={val => setAdsData({ ...adsData, cta: val })} options={CTA_OPTIONS} />
                       </>}
                       {/* ── Bloco inteligente: URL / WhatsApp / formulário ── */}
@@ -3827,7 +4089,7 @@ ${rows.map(r => `<tr>
               title="Salvar todas as configurações como rascunho (sem publicar)"
               style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '10px 16px', borderRadius: '8px', background: draftSavedMsg ? 'rgba(16,185,129,0.12)' : 'transparent', border: `1px solid ${draftSavedMsg ? 'rgba(16,185,129,0.4)' : 'var(--border-light)'}`, color: draftSavedMsg ? '#10b981' : 'var(--text-muted)', fontWeight: '700', fontSize: '13px', cursor: 'pointer', transition: 'all 0.2s' }}
             >
-              {draftSavedMsg ? <><CheckCircle size={14} /> Salvo!</> : <><Download size={14} /> Rascunho</>}
+              {draftSavedMsg ? <><CheckCircle size={14} /> Salvo!</> : <><Download size={14} /> Salvar progresso</>}
             </button>
 
             {activeTab < 3 ? (
@@ -3839,6 +4101,7 @@ ${rows.map(r => `<tr>
                 {/* Toggle Rascunho */}
                 <button
                   onClick={() => setCreateAsDraft(v => !v)}
+                  title="Cria com status rascunho em vez de pausado"
                   style={{
                     display: 'flex', alignItems: 'center', gap: '7px',
                     padding: '9px 14px', borderRadius: '8px', fontSize: '12px', fontWeight: '700',
@@ -3856,7 +4119,7 @@ ${rows.map(r => `<tr>
                   }}>
                     {createAsDraft && <span style={{ color: 'white', fontSize: '9px', fontWeight: '900', lineHeight: 1 }}>✓</span>}
                   </span>
-                  Rascunho
+                  Criar como rascunho na Meta
                 </button>
 
                 <button

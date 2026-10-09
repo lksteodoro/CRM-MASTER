@@ -4,8 +4,10 @@
  * - Feed x Stories: detecta o formato pela proporção, pareia a versão 9:16 com
  *   a versão de feed e monta o asset_feed_spec com personalização por
  *   posicionamento (a Meta mostra cada arquivo no lugar certo).
+ * - Variações de texto: até 5 textos, títulos e descrições no mesmo anúncio.
  * - Herança por conjunto: lê a copy e a URL dos anúncios que já rodam num
  *   conjunto, para que o anúncio novo siga o mesmo destino.
+ * - Beneficiário e pagador (Brasil): reaproveita o par já usado na conta.
  */
 
 // ─── Formato ────────────────────────────────────────────────────────────────
@@ -90,12 +92,19 @@ export function normalizeMediaName(name: string): string {
 
 /**
  * Pareia cada Stories com um Feed do mesmo tipo. Mantém pares já feitos
- * (inclusive os escolhidos à mão); depois casa por nome; por fim, se sobrarem
- * quantidades iguais, casa na ordem de upload.
+ * (inclusive os escolhidos à mão); depois casa por nome. Na ordem de upload
+ * só casa quando nenhum nome bateu e não há par anterior: se algum nome bateu,
+ * o que sobrou são criativos diferentes, e juntá-los publicaria um vídeo no
+ * Feed e outro nos Stories. Mídias em `locked` (separadas à mão) não entram
+ * em par novo.
  *
  * Retorna { [feedId]: storyId }.
  */
-export function autoPairMedia(items: PairableMedia[], existing: Record<string, string> = {}): Record<string, string> {
+export function autoPairMedia(
+  items: PairableMedia[],
+  existing: Record<string, string> = {},
+  locked: ReadonlyArray<string> = []
+): Record<string, string> {
   const byId = new Map(items.map((item) => [item.id, item]));
   const pairs: Record<string, string> = {};
   for (const [feedId, storyId] of Object.entries(existing)) {
@@ -103,29 +112,58 @@ export function autoPairMedia(items: PairableMedia[], existing: Record<string, s
     const story = byId.get(storyId);
     if (feed && story && feed.type === story.type && feed.id !== story.id) pairs[feedId] = storyId;
   }
+  const hadPairs = Object.keys(pairs).length > 0;
 
   const pairedStories = () => new Set(Object.values(pairs));
-  const freeFeeds = () => items.filter((item) => item.placement === 'feed' && !pairs[item.id] && !pairedStories().has(item.id));
-  const freeStories = () => items.filter((item) => item.placement === 'story' && !pairedStories().has(item.id));
+  const free = (item: PairableMedia) => !locked.includes(item.id) && !pairs[item.id] && !pairedStories().has(item.id);
+  const freeFeeds = () => items.filter((item) => item.placement === 'feed' && free(item));
+  const freeStories = () => items.filter((item) => item.placement === 'story' && free(item));
 
+  let pairedByName = 0;
   for (const story of freeStories()) {
     const key = normalizeMediaName(story.name);
     if (!key) continue;
     const match = freeFeeds().find((feed) => feed.type === story.type && normalizeMediaName(feed.name) === key);
-    if (match) pairs[match.id] = story.id;
+    if (match) {
+      pairs[match.id] = story.id;
+      pairedByName += 1;
+    }
   }
 
-  for (const type of ['IMAGE', 'VIDEO'] as const) {
-    const feeds = freeFeeds().filter((item) => item.type === type);
-    const stories = freeStories().filter((item) => item.type === type);
-    if (feeds.length > 0 && feeds.length === stories.length) {
-      feeds.forEach((feed, index) => {
-        pairs[feed.id] = stories[index].id;
-      });
+  if (pairedByName === 0 && !hadPairs) {
+    for (const type of ['IMAGE', 'VIDEO'] as const) {
+      const feeds = freeFeeds().filter((item) => item.type === type);
+      const stories = freeStories().filter((item) => item.type === type);
+      if (feeds.length > 0 && feeds.length === stories.length) {
+        feeds.forEach((feed, index) => {
+          pairs[feed.id] = stories[index].id;
+        });
+      }
     }
   }
   return pairs;
 }
+
+// ─── Variações de texto ─────────────────────────────────────────────────────
+
+/** A Meta aceita até 5 opções de texto principal, de título e de descrição por anúncio. */
+export const MAX_TEXT_OPTIONS = 5;
+
+export type CopyOptions = { primaryTexts: string[]; titles: string[]; descriptions: string[] };
+
+/** Opções de um campo: sem espaços nas pontas, sem vazias, sem repetidas, no máximo 5. */
+export function textOptions(values: ReadonlyArray<unknown>): string[] {
+  const options: string[] = [];
+  for (const value of values) {
+    const text = typeof value === 'string' ? value.trim() : '';
+    if (text && !options.includes(text)) options.push(text);
+    if (options.length === MAX_TEXT_OPTIONS) break;
+  }
+  return options;
+}
+
+export const hasTextVariations = (options: CopyOptions) =>
+  options.primaryTexts.length > 1 || options.titles.length > 1 || options.descriptions.length > 1;
 
 // ─── Criativo com Feed + Stories ────────────────────────────────────────────
 
@@ -140,6 +178,47 @@ export type PlacementCopy = {
 
 const FEED_LABEL = 'venza_feed';
 const STORY_LABEL = 'venza_story';
+
+function feedAsset(mediaType: 'IMAGE' | 'VIDEO', item: PlacementAsset, label?: string) {
+  const adlabels = label ? { adlabels: [{ name: label }] } : {};
+  return mediaType === 'VIDEO'
+    ? {
+        video_id: item.videoId,
+        ...(item.thumbHash ? { thumbnail_hash: item.thumbHash } : item.thumbUrl ? { thumbnail_url: item.thumbUrl } : {}),
+        ...adlabels,
+      }
+    : { hash: item.hash, ...adlabels };
+}
+
+const textAssets = (values: string[]) => (values.length > 0 ? values.map((text) => ({ text })) : undefined);
+
+/**
+ * Anúncio de uma mídia com até 5 textos, 5 títulos e 5 descrições: a Meta
+ * combina as opções e entrega a melhor para cada pessoa. Só para destino site:
+ * em campanhas de mensagem ou formulário esse formato vira criativo dinâmico,
+ * que a Meta recusa nesses objetivos.
+ */
+export function buildTextOptionsAssetFeedSpec(params: {
+  mediaType: 'IMAGE' | 'VIDEO';
+  asset: PlacementAsset;
+  options: CopyOptions;
+  cta?: string;
+  link: string;
+}) {
+  const { mediaType, asset, options, cta, link } = params;
+  const bodies = textAssets(options.primaryTexts);
+  const titles = textAssets(options.titles);
+  const descriptions = textAssets(options.descriptions);
+  return {
+    [mediaType === 'VIDEO' ? 'videos' : 'images']: [feedAsset(mediaType, asset)],
+    ...(bodies ? { bodies } : {}),
+    ...(titles ? { titles } : {}),
+    ...(descriptions ? { descriptions } : {}),
+    link_urls: [{ website_url: link }],
+    call_to_action_types: [cta || 'LEARN_MORE'],
+    ad_formats: [mediaType === 'VIDEO' ? 'SINGLE_VIDEO' : 'SINGLE_IMAGE'],
+  };
+}
 
 /**
  * asset_feed_spec com personalização por posicionamento: a versão 9:16 vai
@@ -156,19 +235,12 @@ export function buildPlacementAssetFeedSpec(params: {
 }) {
   const { mediaType, feed, story, copy, link } = params;
   const labelKey = mediaType === 'VIDEO' ? 'video_label' : 'image_label';
-  const asset = (item: PlacementAsset, label: string) =>
-    mediaType === 'VIDEO'
-      ? {
-          video_id: item.videoId,
-          ...(item.thumbHash ? { thumbnail_hash: item.thumbHash } : item.thumbUrl ? { thumbnail_url: item.thumbUrl } : {}),
-          adlabels: [{ name: label }],
-        }
-      : { hash: item.hash, adlabels: [{ name: label }] };
-
+  // Com mídia por posicionamento a Meta aceita uma opção de cada texto
+  // (várias sem rótulo dão o erro 1885878).
   const text = (value?: string) => (value && value.trim() ? [{ text: value.trim() }] : undefined);
 
   return {
-    [mediaType === 'VIDEO' ? 'videos' : 'images']: [asset(feed, FEED_LABEL), asset(story, STORY_LABEL)],
+    [mediaType === 'VIDEO' ? 'videos' : 'images']: [feedAsset(mediaType, feed, FEED_LABEL), feedAsset(mediaType, story, STORY_LABEL)],
     ...(text(copy.primaryText) ? { bodies: text(copy.primaryText) } : {}),
     ...(text(copy.title) ? { titles: text(copy.title) } : {}),
     ...(text(copy.description) ? { descriptions: text(copy.description) } : {}),
@@ -256,10 +328,25 @@ export function extractAdCopy(creative?: AnyRecord | null): AdCopy {
   };
 }
 
+/** Todas as opções de texto do anúncio (o dinâmico pode ter até 5 de cada). */
+export function extractAdTextOptions(creative?: AnyRecord | null): CopyOptions {
+  const spec = creative?.object_story_spec ?? {};
+  const link = spec.link_data ?? {};
+  const video = spec.video_data ?? {};
+  const feed = creative?.asset_feed_spec ?? {};
+  const feedText = (items: unknown) => (Array.isArray(items) ? items.map((item) => item?.text) : []);
+  return {
+    primaryTexts: textOptions([link.message, video.message, ...feedText(feed.bodies), creative?.body]),
+    titles: textOptions([link.name, video.title, ...feedText(feed.titles), creative?.title]),
+    descriptions: textOptions([link.description, video.link_description, ...feedText(feed.descriptions)]),
+  };
+}
+
 export type InheritedCopy = AdCopy & {
   adCount: number;
   distinctLinks: string[];
   sourceAdName: string;
+  options: CopyOptions;
 };
 
 /**
@@ -287,5 +374,83 @@ export function pickInheritedCopy(ads: GraphAdWithCreative[]): InheritedCopy | n
     adCount: pool.length,
     distinctLinks,
     sourceAdName: source.ad.name || source.ad.id,
+    options: extractAdTextOptions(source.ad.creative),
+  };
+}
+
+// ─── Beneficiário e pagador (Brasil) ────────────────────────────────────────
+
+/**
+ * Conjunto que entrega no Brasil declara quem se beneficia e quem paga pelos
+ * anúncios: regional_regulated_categories = BRAZIL_REGULATION e
+ * regional_regulation_identities com universal_beneficiary e universal_payer
+ * (Marketing API, mudança de 8/12/2025). Não há endpoint público que liste
+ * essas identidades, mas os conjuntos que já existem na conta devolvem as que
+ * foram usadas — é de lá que o sistema tira o par, sem pedir nada a ninguém.
+ */
+export type RegulationIdentities = { beneficiaryId: string; payerId: string };
+
+export type AdSetWithRegulation = {
+  id: string;
+  name?: string;
+  campaign_id?: string;
+  created_time?: string;
+  regional_regulated_categories?: unknown;
+  regional_regulation_identities?: unknown;
+};
+
+export type DetectedIdentities = RegulationIdentities & { sourceAdSetName: string; adSetCount: number };
+
+const identityId = (value: unknown): string => {
+  if (typeof value === 'string' || typeof value === 'number') return String(value).trim();
+  if (value && typeof value === 'object' && 'id' in value) return identityId((value as AnyRecord).id);
+  return '';
+};
+
+/** Par beneficiário/pagador de um conjunto (null se ele não declara). */
+export function readBrazilIdentities(adSet: AdSetWithRegulation): RegulationIdentities | null {
+  const categories = Array.isArray(adSet.regional_regulated_categories) ? adSet.regional_regulated_categories : [];
+  // As mesmas chaves universal_* servem à Tailândia; conjunto só da Tailândia não vale aqui.
+  if (categories.includes('THAILAND_UNIVERSAL') && !categories.includes('BRAZIL_REGULATION')) return null;
+  const identities = (adSet.regional_regulation_identities ?? {}) as AnyRecord;
+  const beneficiaryId = identityId(identities.universal_beneficiary);
+  const payerId = identityId(identities.universal_payer);
+  if (!beneficiaryId && !payerId) return null;
+  return { beneficiaryId: beneficiaryId || payerId, payerId: payerId || beneficiaryId };
+}
+
+/**
+ * Escolhe o par já usado na conta: o que aparece em mais conjuntos; no empate,
+ * o das campanhas escolhidas; depois o mais recente.
+ */
+export function pickBrazilIdentities(adSets: AdSetWithRegulation[], preferCampaignIds: string[] = []): DetectedIdentities | null {
+  const groups = new Map<string, { ids: RegulationIdentities; adSets: AdSetWithRegulation[] }>();
+  for (const adSet of adSets) {
+    const ids = readBrazilIdentities(adSet);
+    if (!ids) continue;
+    const key = `${ids.beneficiaryId}|${ids.payerId}`;
+    const group = groups.get(key) ?? { ids, adSets: [] };
+    group.adSets.push(adSet);
+    groups.set(key, group);
+  }
+  const preferred = (group: { adSets: AdSetWithRegulation[] }) =>
+    group.adSets.some((adSet) => adSet.campaign_id && preferCampaignIds.includes(adSet.campaign_id)) ? 1 : 0;
+  const newest = (group: { adSets: AdSetWithRegulation[] }) =>
+    Math.max(0, ...group.adSets.map((adSet) => Date.parse(adSet.created_time ?? '') || 0));
+  const best = [...groups.values()].sort(
+    (a, b) => b.adSets.length - a.adSets.length || preferred(b) - preferred(a) || newest(b) - newest(a)
+  )[0];
+  if (!best) return null;
+  const source = [...best.adSets].sort((a, b) => (Date.parse(b.created_time ?? '') || 0) - (Date.parse(a.created_time ?? '') || 0))[0];
+  return { ...best.ids, sourceAdSetName: source.name || source.id, adSetCount: best.adSets.length };
+}
+
+/** Parâmetros do conjunto novo que entrega no Brasil (valores já em JSON, como a Graph espera). */
+export function brazilRegulationParams(ids: RegulationIdentities) {
+  const beneficiary = ids.beneficiaryId.trim() || ids.payerId.trim();
+  const payer = ids.payerId.trim() || beneficiary;
+  return {
+    regional_regulated_categories: JSON.stringify(['BRAZIL_REGULATION']),
+    regional_regulation_identities: JSON.stringify({ universal_beneficiary: beneficiary, universal_payer: payer }),
   };
 }
