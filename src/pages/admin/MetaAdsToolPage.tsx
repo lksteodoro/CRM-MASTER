@@ -7,6 +7,7 @@ import {
   ListChecks,
   Megaphone,
   ImagePlus,
+  Layers,
   Play,
   Rocket,
   Settings2,
@@ -16,6 +17,7 @@ import {
 } from 'lucide-react';
 import MetaAdCreator from '../../components/MetaAdCreator';
 import { MetaCampaignUrls } from '../../components/ads/MetaCampaignUrls';
+import { MetaBulkEditor } from '../../components/ads/MetaBulkEditor';
 import { MetaDailyReportPanel } from '../../components/ads/MetaDailyReportPanel';
 import { listProjects } from '../../services/projects.service';
 import type { ProjectRow } from '../../integrations/supabase/database.types';
@@ -23,6 +25,7 @@ import { ErrorView, LoadingView } from '../../components/ui/StateView';
 
 const META_TABS = [
   { id: 'publicar', label: 'Publicar', icon: Rocket },
+  { id: 'editor', label: 'Editor em massa', icon: Layers },
   { id: 'campanhas', label: 'Campanhas', icon: ListChecks },
   { id: 'resumo', label: 'Resumo diário', icon: CalendarClock },
 ] as const;
@@ -196,7 +199,7 @@ export function MetaAdsToolPage() {
           <div>
             <h1 className="text-2xl font-semibold tracking-tight text-[var(--color-text)]">Meta Ads</h1>
             <p className="mt-1 max-w-xl text-sm leading-6 text-[var(--color-text-muted)]">
-              Publique anúncios, consulte campanhas e acompanhe o resultado de ontem.
+              Publique anúncios, edite em massa o que já está rodando e acompanhe o resultado de ontem.
             </p>
           </div>
         </div>
@@ -279,6 +282,12 @@ export function MetaAdsToolPage() {
         <p className="mt-4 text-[11px] text-[var(--color-text-faint)]">Os perfis guardam apenas atalhos de configuração (conta, página, pixel) e ficam neste navegador. A credencial da Meta nunca passa por aqui: ela fica no servidor, na conexão feita em Configurações › APIs.</p>
       </div>
       </section>
+
+      {visitedTabs.has('editor') && (
+        <section id="meta-panel-editor" role="tabpanel" aria-labelledby="meta-tab-editor" hidden={tab !== 'editor'} className="mt-6">
+          <MetaBulkEditor />
+        </section>
+      )}
 
       {visitedTabs.has('campanhas') && (
         <section id="meta-panel-campanhas" role="tabpanel" aria-labelledby="meta-tab-campanhas" hidden={tab !== 'campanhas'} className="mt-6">

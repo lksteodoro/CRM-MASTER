@@ -45,6 +45,31 @@ const WRITE_PATHS: RegExp[] = [
 
 const allowed = (path: string, list: RegExp[]) => list.some((rule) => rule.test(path));
 
+// ── Edição de objetos que já existem ────────────────────────────────────────
+// O editor em massa liga e pausa, renomeia e muda orçamento de campanhas,
+// conjuntos e anúncios. Só esses campos passam: excluir, segmentação, lance e
+// cobrança continuam fora do alcance do navegador.
+const NODE_PATH = /^\d+$/;
+const UPDATE_STATUS = new Set(['ACTIVE', 'PAUSED']);
+
+function updateParamsError(params: Record<string, unknown>): string | null {
+  const entries = Object.entries(params).filter(([key]) => key !== 'access_token' && key !== 'appsecret_proof');
+  if (entries.length === 0) return 'nada para alterar';
+  for (const [key, raw] of entries) {
+    const value = String(raw ?? '');
+    if (key === 'status') {
+      if (!UPDATE_STATUS.has(value)) return `status ${value} não liberado`;
+    } else if (key === 'name') {
+      if (!value.trim() || value.length > 400) return 'nome inválido';
+    } else if (key === 'daily_budget' || key === 'lifetime_budget') {
+      if (!/^\d{1,12}$/.test(value)) return `${key} inválido`;
+    } else {
+      return `campo ${key} não liberado`;
+    }
+  }
+  return null;
+}
+
 function normalizePath(raw: unknown) {
   const path = String(raw ?? '').replace(/^\/+|\/+$/g, '');
   if (!path || path.includes('..') || path.includes('?') || /\s/.test(path)) return null;
@@ -272,12 +297,35 @@ Deno.serve(async (request) => {
       return json(await noteAuthFailure(await response.json()));
     }
 
+    // ── Edição de um objeto existente ───────────────────────────────────────
+    if (op === 'update') {
+      const path = normalizePath(body.path);
+      if (!path || !NODE_PATH.test(path)) return json({ error: 'path_not_allowed', path: body.path }, 403);
+      const fields = (body.params ?? {}) as Record<string, unknown>;
+      const problem = updateParamsError(fields);
+      if (problem) return json({ error: 'update_not_allowed', message: problem }, 403);
+      const params = auth();
+      for (const [key, value] of Object.entries(fields)) {
+        if (key === 'access_token' || key === 'appsecret_proof') continue;
+        params.set(key, String(value));
+      }
+      const response = await fetch(`${GRAPH}/${path}`, { method: 'POST', body: params });
+      return json(await noteAuthFailure(await response.json()));
+    }
+
     // ── Batch ───────────────────────────────────────────────────────────────
+    // Itens de criação vão para as coleções da conta; itens de edição vão para
+    // o id do objeto e só com os campos liberados acima.
     if (op === 'batch') {
       const items = Array.isArray(body.items) ? body.items : [];
       if (items.length === 0 || items.length > 50) return json({ error: 'invalid_batch' }, 400);
-      for (const item of items as Array<{ relative_url?: string }>) {
+      for (const item of items as Array<{ method?: string; relative_url?: string; body?: string }>) {
         const path = normalizePath(String(item.relative_url ?? '').split('?')[0]);
+        if (path && NODE_PATH.test(path) && item.method === 'POST') {
+          const problem = updateParamsError(Object.fromEntries(new URLSearchParams(String(item.body ?? ''))));
+          if (problem) return json({ error: 'update_not_allowed', message: problem, path: item.relative_url }, 403);
+          continue;
+        }
         if (!path || !allowed(path, WRITE_PATHS)) return json({ error: 'path_not_allowed', path: item.relative_url }, 403);
       }
       const params = auth();

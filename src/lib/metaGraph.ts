@@ -166,6 +166,16 @@ export async function metaPost<T = any>(path: string, params: Record<string, unk
   return payload as T;
 }
 
+/** Edição de um objeto existente: status, nome ou orçamento (o servidor recusa o resto). */
+export async function metaUpdate<T = any>(id: string, params: Record<string, string>, options?: InvokeOptions): Promise<T> {
+  const payload = await invoke<any>({ op: 'update', path: id, params }, options);
+  if (payload?.error) {
+    if (typeof payload.error === 'string') throw new MetaApiError(payload.message || payload.error);
+    throwGraphError(payload.error);
+  }
+  return payload as T;
+}
+
 export type BatchItem = { method: 'POST' | 'GET'; relative_url: string; body?: string };
 export type BatchResponse = { code: number; body?: string };
 

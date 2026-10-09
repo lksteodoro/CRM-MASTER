@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { X, UploadCloud, PlayCircle, Loader2, AlertCircle, CheckCircle, Database, Info, ChevronDown, ChevronLeft, ChevronRight, Clock, Download, Trash2, Settings, RotateCcw, Plus, FolderOpen, ArrowLeftRight, Unlink, Pencil, ShieldCheck } from 'lucide-react';
+import { X, UploadCloud, PlayCircle, Loader2, AlertCircle, CheckCircle, Database, Info, ChevronDown, ChevronLeft, ChevronRight, Clock, Download, Trash2, Settings, RotateCcw, Plus, FolderOpen, ArrowLeftRight, Unlink, Pencil, ShieldCheck, Zap, Link2, Type, Heading, MessageCircle, FileText } from 'lucide-react';
 import {
   metaGet,
   metaGetAll,
@@ -1110,7 +1110,7 @@ ${rows.map(r => `<tr>
     // aqui só refletimos isso na tela.
     const rateNotice = {
       onRateLimit: (seconds) => {
-        setAdSetFetchError(`⏳ Limite de requisições da Meta — aguardando ${seconds}s...`);
+        setAdSetFetchError(`Limite de requisições da Meta — aguardando ${seconds}s...`);
       },
     };
     Promise.all(campIds.map(campId =>
@@ -1212,7 +1212,9 @@ ${rows.map(r => `<tr>
   const [slotPicker, setSlotPicker] = useState(null);
   const slotUploadRef = useRef(null);
   const slotUploadTarget = useRef(null);
-  const [createAsDraft, setCreateAsDraft] = useState(false);
+  // Status com que campanha, conjunto e anúncios novos nascem na Meta.
+  const [launchStatus, setLaunchStatus] = useState('PAUSED');
+  const createAsDraft = launchStatus === 'DRAFT';
   const [preserveOriginalMedia, setPreserveOriginalMedia] = useState(true);
   const [forceMessagesDest, setForceMessagesDest] = useState(false);
   const [leadDestType, setLeadDestType] = useState('WEBSITE');
@@ -1308,6 +1310,18 @@ ${rows.map(r => `<tr>
   );
 
   const isLeadFormDest = activeObjective === 'OUTCOME_LEADS' && leadDestType === 'INSTANT_FORM';
+
+  // Formulários de lead da página, para escolher na lista em vez de colar o ID.
+  const [leadForms, setLeadForms] = useState({ status: 'idle', list: [], error: '' });
+  useEffect(() => {
+    if (!isLeadFormDest || !accountData.pageId || !connection.connected) return;
+    let alive = true;
+    setLeadForms({ status: 'loading', list: [], error: '' });
+    metaGetAll(`${accountData.pageId}/leadgen_forms`, { fields: 'id,name,status,created_time', limit: 100 }, { maxPages: 3 })
+      .then(list => { if (alive) setLeadForms({ status: 'done', list: list.filter(form => !['ARCHIVED', 'DELETED'].includes(form.status)), error: '' }); })
+      .catch(caught => { if (alive) setLeadForms({ status: 'error', list: [], error: caught?.message || 'Não foi possível listar os formulários.' }); });
+    return () => { alive = false; };
+  }, [isLeadFormDest, accountData.pageId, connection.connected]);
 
   // ─── Validação por aba ────────────────────────────────────────────────────────
   const tabErrors = {
@@ -1585,6 +1599,12 @@ ${rows.map(r => `<tr>
     setActiveCopyFileId(null);
   };
 
+  // Fechar com mídias ainda não publicadas perde o lote: pergunta antes.
+  const requestClose = () => {
+    if (mediaFiles.length > 0 && !publishDone && !window.confirm('Fechar o criador? As mídias deste lote ainda não foram publicadas e serão descartadas. Para guardar contas, campanha e textos, use "Salvar progresso" antes.')) return;
+    onClose();
+  };
+
   const pushLog = (msg, status = 'loading') => setLogs(prev => [...prev, { id: Date.now() + Math.random(), msg, status }]);
   const updateLastLog = (status) => setLogs(prev => { const c = [...prev]; if (c.length) c[c.length - 1].status = status; return c; });
   const updateLogById = (id, status) => setLogs(prev => prev.map(l => l.id === id ? { ...l, status } : l));
@@ -1612,6 +1632,7 @@ ${rows.map(r => `<tr>
       setActiveTab(1);
       return;
     }
+    if (launchStatus === 'ACTIVE' && !window.confirm(`Os ${adUnits.length} anúncio(s) vão começar a rodar e a gastar assim que a Meta aprovar. Publicar já ativos?`)) return;
     if (createsNewAdSet && regulationScan.status === 'loading') {
       setError('Aguarde um instante: o sistema ainda está buscando o beneficiário e o pagador nos conjuntos da conta.');
       return;
@@ -1665,7 +1686,7 @@ ${rows.map(r => `<tr>
 
     // A espera por limite de requisição acontece dentro do cliente da Graph;
     // aqui só mostramos ao operador o que está acontecendo.
-    const rateLimitNotice = { onRateLimit: (seconds, code) => pushLog(`⏳ Limite de requisições da Meta (${code}) — aguardando ${seconds}s...`, 'loading') };
+    const rateLimitNotice = { onRateLimit: (seconds, code) => pushLog(`Limite de requisições da Meta (${code}) — aguardando ${seconds}s...`, 'loading') };
 
     // ── POST simples na Graph API (via servidor) ─────────────────────────────
     const apiPost = async (endpoint, params) => {
@@ -1738,7 +1759,7 @@ ${rows.map(r => `<tr>
           ...l,
           status: 'success',
           msg: result.optimized
-            ? `${logPrefix} ⚡ Vídeo otimizado: ${formatMb(result.before)} → ${formatMb(result.after)}`
+            ? `${logPrefix} Vídeo otimizado: ${formatMb(result.before)} → ${formatMb(result.after)}`
             : `${logPrefix} Otimização não compensou; enviando o original.`,
         } : l));
       }
@@ -1896,7 +1917,7 @@ ${rows.map(r => `<tr>
         const payload = {
           name: campData.name,
           objective: campData.objective,
-          status: createAsDraft ? 'DRAFT' : 'PAUSED',
+          status: launchStatus,
           special_ad_categories: serializeSpecialAdCategories(specialAdCategory),
         };
         pushLog(`Categoria especial declarada: ${specialAdCategoryLabel(specialAdCategory)}`, 'success');
@@ -1923,7 +1944,7 @@ ${rows.map(r => `<tr>
       } else {
         const effectiveObjective = campaignObjective || campData.objective;
         if (effectiveObjective === 'OUTCOME_SALES' && !adSetData.pixelId) {
-          pushLog('⚠️ Sem pixel — conjunto será otimizado por Cliques no Link.', 'success');
+          pushLog('Sem pixel — conjunto será otimizado por Cliques no Link.', 'success');
         }
 
         pushLog(`Criando conjunto: "${adSetData.name}"...`);
@@ -1937,7 +1958,7 @@ ${rows.map(r => `<tr>
           optimization_goal: adSetData.optimizationGoal,
           billing_event: 'IMPRESSIONS',
           bid_strategy: 'LOWEST_COST_WITHOUT_CAP',
-          status: createAsDraft ? 'DRAFT' : 'PAUSED',
+          status: launchStatus,
           targeting: JSON.stringify(targeting),
         };
         if (campData.budgetType !== 'CBO') adSetPayload.daily_budget = String(adSetData.budget * 100);
@@ -2039,7 +2060,7 @@ ${rows.map(r => `<tr>
         const isLeadForm  = (effectiveObjPub === 'OUTCOME_LEADS' && leadDestType === 'INSTANT_FORM') || destType === 'ON_AD';
         return { isWhatsApp, isMessenger, isMsgDest, isLeadForm };
       };
-      const objLabels = { OUTCOME_TRAFFIC: '🚦 Tráfego', OUTCOME_LEADS: '📋 Leads', OUTCOME_SALES: '🛒 Vendas', OUTCOME_ENGAGEMENT: '💬 Engajamento' };
+      const objLabels = { OUTCOME_TRAFFIC: 'Tráfego', OUTCOME_LEADS: 'Leads', OUTCOME_SALES: 'Vendas', OUTCOME_ENGAGEMENT: 'Engajamento' };
       pushLog(`Objetivo: ${objLabels[effectiveObjPub] || effectiveObjPub}`, 'success');
 
       // ── 3. Upload de mídias em paralelo ──────────────────────────────────────
@@ -2061,7 +2082,7 @@ ${rows.map(r => `<tr>
           if (hash && uploadCache[hash]) {
             const thumbHash = uploadCache[thumbCacheKey] || null;
             updateLogById(logId, 'success');
-            pushLog(`${logPrefix} ♻️ Reutilizando (${media.file.name})`, 'success');
+            pushLog(`${logPrefix} Reutilizando (${media.file.name})`, 'success');
             return { uploaded: uploadCache[hash], thumbHash, fileId: media.id };
           }
           const [uploaded, thumbHash] = await Promise.all([
@@ -2236,10 +2257,10 @@ ${rows.map(r => `<tr>
         }),
       }));
       for (const name of storyWarnings) {
-        pushLog(`⚠️ "${name}": Feed + Stories precisa de destino site com URL (este conjunto é de mensagens, formulário ou multi-destino) — publicada só a versão de feed.`, 'error');
+        pushLog(`"${name}": Feed + Stories precisa de destino site com URL (este conjunto é de mensagens, formulário ou multi-destino) — publicada só a versão de feed.`, 'error');
       }
       for (const [name, reason] of singleTextWarnings) {
-        pushLog(`ℹ️ "${name}": ${reason} — vai a 1ª opção de texto, título e descrição.`, 'success');
+        pushLog(`"${name}": ${reason} — vai a 1ª opção de texto, título e descrição.`, 'success');
       }
       const textOptionCreatives = uniqueCreatives.filter(c => c.fallback).length;
       if (textOptionCreatives > 0) {
@@ -2272,7 +2293,7 @@ ${rows.map(r => `<tr>
           creativeIds[start + i] = body.id;
         }
         if (retry.length > 0) {
-          pushLog(`⚠️ A Meta não aceitou as opções de texto em ${retry.length} criativo(s) (${retry[0].reason}). Refazendo com a 1ª opção...`, 'error');
+          pushLog(`A Meta não aceitou as opções de texto em ${retry.length} criativo(s) (${retry[0].reason}). Refazendo com a 1ª opção...`, 'error');
           const retryRes = await metaBatch(retry.map(r => buildBatchItem(`${adAccountId}/adcreatives`, chunk[r.index].fallback)), rateLimitNotice);
           retryRes.forEach((item, k) => {
             const body = readBatchBody(item);
@@ -2308,7 +2329,7 @@ ${rows.map(r => `<tr>
             name: unit.adName,
             adset_id: currentAdSetId,
             creative: JSON.stringify({ creative_id: creativeIds[creativeIndex] }),
-            status: createAsDraft ? 'DRAFT' : 'PAUSED',
+            status: launchStatus,
             ...(trackingSpecs ? { tracking_specs: trackingSpecs } : {}),
           })
         );
@@ -2344,11 +2365,11 @@ ${rows.map(r => `<tr>
           const verifBody = JSON.parse(verifItem.body || '{}');
           const verifRaw = verifBody.error?.error_user_msg || verifBody.error?.message || '';
           setRawMetaError(`[Código ${verifBody.error?.code}] ${verifRaw}`);
-          pushLog('⚠️ Erro de verificação de anunciante — veja o card de ajuda abaixo.', 'error');
+          pushLog('Erro de beneficiário/pagador — veja a explicação abaixo.', 'error');
           setError('ADVERTISER_VERIFICATION');
         }
         updateLogById(adsLogId, okCount > 0 ? 'success' : 'error');
-        pushLog(`${okCount > 0 ? '✅' : '❌'} ${okCount}/${items.length} anúncio(s) criado(s) em "${currentAdSetName}"`, okCount > 0 ? 'success' : 'error');
+        pushLog(`${okCount}/${items.length} anúncio(s) criado(s) em "${currentAdSetName}"`, okCount > 0 ? 'success' : 'error');
         totalCreated += okCount;
       }
 
@@ -2357,8 +2378,8 @@ ${rows.map(r => `<tr>
         throw new Error(`Nenhum anúncio foi criado (0/${units.length * plan.length}). Veja os erros acima para detalhes.`);
       }
       if (adsData.utmTags) pushLog('UTM tags aplicadas em todos os anúncios.', 'success');
-      pushLog(`✅ ${totalCreated} anúncio(s) no total (${plan.length} conjunto(s)) — todos ${createAsDraft ? 'RASCUNHO' : 'PAUSADOS'}.`, 'success');
-      pushLog(createAsDraft ? 'Rascunhos salvos. Revise e publique no Gerenciador de Anúncios.' : 'Revise e ative no Gerenciador de Anúncios quando pronto.', 'success');
+      pushLog(`${totalCreated} anúncio(s) no total (${plan.length} conjunto(s)) — todos ${{ ACTIVE: 'ATIVOS', PAUSED: 'PAUSADOS', DRAFT: 'EM RASCUNHO' }[launchStatus]}.`, 'success');
+      pushLog(launchStatus === 'ACTIVE' ? 'Eles passam pela análise da Meta e começam a rodar quando aprovados. Acompanhe na aba Editor em massa.' : launchStatus === 'DRAFT' ? 'Rascunhos salvos na Meta.' : 'Para ativar sem abrir o Gerenciador, use a aba Editor em massa.', 'success');
       setPublishDone(true);
 
       // ── Salvar no histórico ──────────────────────────────────────────────────
@@ -2553,7 +2574,7 @@ ${rows.map(r => `<tr>
   // ─── Input helper ─────────────────────────────────────────────────────────────
   return (
     <div
-      className="modal-overlay"
+      className="modal-overlay meta-ad-creator"
       style={{
         position: 'fixed',
         inset: 0,
@@ -2587,7 +2608,7 @@ ${rows.map(r => `<tr>
                 MODO DEMO
               </span>
             )}
-            <button onClick={onClose} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '4px' }}>
+            <button type="button" onClick={requestClose} aria-label="Fechar o criador" style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '4px' }}>
               <X size={22} />
             </button>
           </div>
@@ -3365,7 +3386,7 @@ ${rows.map(r => `<tr>
                         </div>
                       ) : campaignObjective ? (
                         <div style={{ padding: '10px 14px', background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.25)', borderRadius: '8px', fontSize: '12px', color: 'var(--primary)', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          ⚡ Objetivo detectado: {OBJECTIVE_LABEL(campaignObjective)} — parâmetros ajustados automaticamente
+                          <Zap size={14} style={{ flexShrink: 0 }} /> Objetivo detectado: {OBJECTIVE_LABEL(campaignObjective)} — parâmetros ajustados automaticamente
                         </div>
                       ) : null
                     )}
@@ -3427,7 +3448,7 @@ ${rows.map(r => `<tr>
                               ]} />
                           </div>
                           {showPixel && (
-                            <SelectField label="📍 Pixel de Conversão" value={adSetData.pixelId}
+                            <SelectField label="Pixel de conversão" value={adSetData.pixelId}
                               onChange={val => setAdSetData({ ...adSetData, pixelId: val })} highlight
                               items={[{ id: '', name: '— Selecione o Pixel —' }, ...apiData.pixels.map(p => ({ id: p.id, name: `${p.name} (ID: ${p.id})` }))]}
                               placeholder="— Selecione o Pixel —" />
@@ -3435,7 +3456,7 @@ ${rows.map(r => `<tr>
                           {/* Aviso sem pixel — Vendas */}
                           {effectiveObj === 'OUTCOME_SALES' && !adSetData.pixelId && (
                             <div style={{ padding: '10px 14px', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: '8px', fontSize: '12px', color: '#f59e0b', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                              ⚠️ Sem pixel — conjunto otimizado por Cliques no Link. Selecione um Pixel para otimizar por Conversão.
+                              <AlertCircle size={14} style={{ flexShrink: 0 }} /> Sem pixel — conjunto otimizado por Cliques no Link. Selecione um Pixel para otimizar por Conversão.
                             </div>
                           )}
 
@@ -3562,7 +3583,7 @@ ${rows.map(r => `<tr>
 
                   const iconButton = (title, onClick, icon, tone = 'var(--text-muted)') => (
                     <button type="button" title={title} aria-label={title} onClick={(e) => { e.stopPropagation(); onClick(); }}
-                      style={{ width: '26px', height: '26px', borderRadius: '7px', border: '1px solid var(--border-light)', background: 'var(--bg-app)', color: tone, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      style={{ width: '30px', height: '30px', borderRadius: '8px', border: '1px solid var(--border-light)', background: 'var(--bg-app)', color: tone, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                       {icon}
                     </button>
                   );
@@ -3824,12 +3845,12 @@ ${rows.map(r => `<tr>
                                     {entry?.status === 'empty' && <div style={{ color: '#f59e0b', marginTop: '3px' }}>Conjunto sem anúncios — usa a copy e a URL preenchidas abaixo.</div>}
                                     {entry?.status === 'ready' && data && (
                                       <div style={{ marginTop: '3px', display: 'flex', flexDirection: 'column', gap: '2px', color: 'var(--text-muted)' }}>
-                                        {inheritUrl && <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={data.link}>🔗 {data.link || <em>sem URL nos anúncios — usa a URL abaixo</em>}</div>}
-                                        {inheritCopy && data.primaryText && <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={data.primaryText}>✍️ {data.primaryText}</div>}
-                                        {inheritCopy && data.title && <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>📰 {data.title}</div>}
+                                        {inheritUrl && <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={data.link}><Link2 size={11} style={{ verticalAlign: '-1px', marginRight: '4px' }} />{data.link || <em>sem URL nos anúncios — usa a URL abaixo</em>}</div>}
+                                        {inheritCopy && data.primaryText && <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={data.primaryText}><Type size={11} style={{ verticalAlign: '-1px', marginRight: '4px' }} />{data.primaryText}</div>}
+                                        {inheritCopy && data.title && <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}><Heading size={11} style={{ verticalAlign: '-1px', marginRight: '4px' }} />{data.title}</div>}
                                         <div style={{ fontSize: '10px' }}>Base: {data.adCount} anúncio(s) · referência "{data.sourceAdName}"</div>
                                         {inheritUrl && data.distinctLinks.length > 1 && (
-                                          <div style={{ color: '#f59e0b', fontSize: '10px' }}>⚠️ Este conjunto já tem {data.distinctLinks.length} URLs diferentes — os novos anúncios usam a mais usada.</div>
+                                          <div style={{ color: '#f59e0b', fontSize: '10px' }}><AlertCircle size={11} style={{ verticalAlign: '-1px', marginRight: '4px' }} />Este conjunto já tem {data.distinctLinks.length} URLs diferentes — os novos anúncios usam a mais usada.</div>
                                         )}
                                         {inheritUrl && data.link && validateDestinationUrl(data.link) && <div style={{ color: '#ef4444', fontSize: '10px' }}>{validateDestinationUrl(data.link)}</div>}
                                       </div>
@@ -3978,7 +3999,7 @@ ${rows.map(r => `<tr>
                       {isAutoMsgDest ? (
                         <div style={{ padding: '12px 14px', background: 'rgba(37,211,102,0.06)', border: '1px solid rgba(37,211,102,0.25)', borderRadius: '8px', fontSize: '12px', color: '#25d366', fontWeight: '600', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            <span>📱</span>
+                            <MessageCircle size={14} style={{ flexShrink: 0 }} />
                             <span>
                               {MSG_OBJECTIVES.includes(activeObjective)
                                 ? `Objetivo ${OBJECTIVE_LABEL(activeObjective)} detectado`
@@ -3991,7 +4012,7 @@ ${rows.map(r => `<tr>
                           </span>
                           <div style={{ marginTop: '4px' }}>
                             <label style={{ fontSize: '11px', fontWeight: '700', color: '#25d366', marginBottom: '6px', display: 'block', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                              💬 Mensagem pré-preenchida no WhatsApp
+                              Mensagem pré-preenchida no WhatsApp
                             </label>
                             <input
                               type="text"
@@ -4037,11 +4058,20 @@ ${rows.map(r => `<tr>
                       ) : isLeadFormDest ? (
                         <>
                           <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.2)', fontSize: '12px', color: '#10b981', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            📋 Formulário Instantâneo — URL não necessária
+                            <FileText size={14} style={{ flexShrink: 0 }} /> Formulário Instantâneo — URL não necessária
                           </div>
-                          <Field label="ID do Formulário de Lead (opcional)" value={adsData.leadFormId} onChange={e => setAdsData({ ...adsData, leadFormId: e.target.value })} placeholder="Ex: 1234567890123456" />
-                          <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '-8px', lineHeight: '1.4' }}>
-                            Deixe em branco para criar o anúncio sem formulário vinculado.
+                          {leadForms.list.length > 0 ? (
+                            <SelectField label="Formulário de lead" value={adsData.leadFormId} onChange={val => setAdsData({ ...adsData, leadFormId: val })} highlight
+                              items={[{ id: '', name: '— Sem formulário —' }, ...leadForms.list.map(form => ({ id: form.id, name: `${form.name || form.id}${form.status && form.status !== 'ACTIVE' ? ' (inativo)' : ''}` }))]}
+                              placeholder="Escolha o formulário" />
+                          ) : (
+                            <Field label="ID do formulário de lead (opcional)" value={adsData.leadFormId} onChange={e => setAdsData({ ...adsData, leadFormId: e.target.value })} placeholder="Ex: 1234567890123456" />
+                          )}
+                          <p style={{ fontSize: '11px', color: leadForms.status === 'error' ? '#f59e0b' : 'var(--text-muted)', marginTop: '-8px', lineHeight: '1.4' }}>
+                            {leadForms.status === 'loading' ? 'Buscando os formulários da página...'
+                              : leadForms.status === 'error' ? `Não deu para listar os formulários da página (${leadForms.error}). Cole o ID do formulário.`
+                              : leadForms.list.length > 0 ? `${leadForms.list.length} formulário(s) desta página. Sem formulário, o anúncio é criado sem vínculo.`
+                              : 'Deixe em branco para criar o anúncio sem formulário vinculado.'}
                           </p>
                         </>
                       ) : null}
@@ -4098,47 +4128,36 @@ ${rows.map(r => `<tr>
               </button>
             ) : (
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                {/* Toggle Rascunho */}
-                <button
-                  onClick={() => setCreateAsDraft(v => !v)}
-                  title="Cria com status rascunho em vez de pausado"
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: '7px',
-                    padding: '9px 14px', borderRadius: '8px', fontSize: '12px', fontWeight: '700',
-                    border: `1px solid ${createAsDraft ? 'rgba(16,185,129,0.6)' : 'var(--border-main)'}`,
-                    background: createAsDraft ? 'rgba(16,185,129,0.1)' : 'transparent',
-                    color: createAsDraft ? 'var(--primary)' : 'var(--text-muted)',
-                    cursor: 'pointer', transition: 'all 0.15s',
-                  }}
-                >
-                  <span style={{
-                    width: '14px', height: '14px', borderRadius: '3px',
-                    border: `2px solid ${createAsDraft ? 'var(--primary)' : 'var(--text-muted)'}`,
-                    background: createAsDraft ? 'var(--primary)' : 'transparent',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                  }}>
-                    {createAsDraft && <span style={{ color: 'white', fontSize: '9px', fontWeight: '900', lineHeight: 1 }}>✓</span>}
-                  </span>
-                  Criar como rascunho na Meta
-                </button>
+                {/* Como os anúncios saem: pausados (padrão), já ativos ou rascunho */}
+                <div role="radiogroup" aria-label="Status dos anúncios ao publicar" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)' }}>Publicar</span>
+                  <div style={{ display: 'flex', background: 'var(--bg-app)', border: '1px solid var(--border-main)', borderRadius: '8px', padding: '2px' }}>
+                    {[['PAUSED', 'Pausados', 'Criam pausados para você revisar e ativar depois'], ['ACTIVE', 'Ativos', 'Começam a rodar assim que a Meta aprovar'], ['DRAFT', 'Rascunho', 'Criam com status rascunho']].map(([value, label, hint]) => (
+                      <button key={value} type="button" role="radio" aria-checked={launchStatus === value} title={hint} onClick={() => setLaunchStatus(value)}
+                        style={{ padding: '7px 11px', borderRadius: '6px', border: 'none', fontSize: '12px', fontWeight: '700', cursor: 'pointer', background: launchStatus === value ? (value === 'ACTIVE' ? 'rgba(16,185,129,0.18)' : 'var(--bg-surface)') : 'transparent', color: launchStatus === value ? (value === 'ACTIVE' ? '#34d399' : 'var(--text-main)') : 'var(--text-muted)' }}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
                 <button
+                  type="button"
                   onClick={handlePublishBatch}
                   disabled={mediaFiles.length === 0}
                   style={{
-                    padding: '10px 28px', borderRadius: '8px', fontWeight: '800', fontSize: '14px',
-                    background: mediaFiles.length === 0 ? 'var(--border-main)' : createAsDraft ? 'linear-gradient(135deg, #7c3aed, #6d28d9)' : 'linear-gradient(135deg, #1877F2, #0056d6)',
+                    padding: '10px 24px', borderRadius: '8px', fontWeight: '800', fontSize: '14px',
+                    background: mediaFiles.length === 0 ? 'var(--border-main)' : launchStatus === 'ACTIVE' ? 'linear-gradient(135deg, #059669, #047857)' : createAsDraft ? 'linear-gradient(135deg, #7c3aed, #6d28d9)' : 'linear-gradient(135deg, #1877F2, #0056d6)',
                     color: mediaFiles.length === 0 ? 'var(--text-muted)' : 'white', border: 'none',
                     cursor: mediaFiles.length === 0 ? 'not-allowed' : 'pointer',
                     display: 'flex', alignItems: 'center', gap: '8px',
-                    boxShadow: mediaFiles.length > 0 ? `0 6px 16px ${createAsDraft ? 'rgba(109,40,217,0.3)' : 'rgba(24,119,242,0.3)'}` : 'none',
                     transition: 'all 0.2s',
                   }}
                 >
                   <PlayCircle size={17} />
                   {createAsDraft
-                    ? `Salvar Rascunho${adUnits.length > 0 ? ` (${adUnits.length})` : ''}`
-                    : `Publicar ${adUnits.length > 0 ? `${adUnits.length} ad${adUnits.length > 1 ? 's' : ''}` : 'Lote'} na Meta`
+                    ? `Salvar rascunho${adUnits.length > 0 ? ` (${adUnits.length})` : ''}`
+                    : `Publicar ${adUnits.length > 0 ? `${adUnits.length} anúncio${adUnits.length > 1 ? 's' : ''}` : 'lote'}${launchStatus === 'ACTIVE' ? (adUnits.length > 1 ? ' ativos' : ' ativo') : ''}`
                   }
                 </button>
               </div>
@@ -4146,7 +4165,7 @@ ${rows.map(r => `<tr>
           </div>
         </div>}
       </div>
-      <style>{`@keyframes spin { 100% { transform: rotate(360deg); } } @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }`}</style>
+      <style>{`@keyframes spin { 100% { transform: rotate(360deg); } } @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } } .meta-ad-creator :is(button, input, textarea, select, a):focus-visible, .meta-ad-creator label:has(input[type=file]:focus-visible) { outline: 2px solid var(--primary); outline-offset: 2px; } @media (prefers-reduced-motion: reduce) { .meta-ad-creator *, .meta-ad-creator *::before, .meta-ad-creator *::after { animation-duration: 0.01ms !important; transition: none !important; scroll-behavior: auto !important; } }`}</style>
     </div>
   );
 };
