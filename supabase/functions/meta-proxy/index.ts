@@ -47,10 +47,41 @@ const allowed = (path: string, list: RegExp[]) => list.some((rule) => rule.test(
 
 // ── Edição de objetos que já existem ────────────────────────────────────────
 // O editor em massa liga e pausa, renomeia e muda orçamento de campanhas,
-// conjuntos e anúncios. Só esses campos passam: excluir, segmentação, lance e
-// cobrança continuam fora do alcance do navegador.
+// conjuntos e anúncios, troca o criativo do anúncio (texto, URL e parâmetros
+// mudam num criativo novo) e o pixel. Só esses campos passam: excluir,
+// segmentação, lance e cobrança continuam fora do alcance do navegador.
 const NODE_PATH = /^\d+$/;
 const UPDATE_STATUS = new Set(['ACTIVE', 'PAUSED']);
+
+function parseJson(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+}
+
+/** {"creative_id":"123"} e nada mais. */
+function isCreativeRef(value: string) {
+  const parsed = parseJson(value) as Record<string, unknown> | undefined;
+  return Boolean(parsed && typeof parsed === 'object' && !Array.isArray(parsed) &&
+    Object.keys(parsed).length === 1 && /^\d+$/.test(String(parsed.creative_id ?? '')));
+}
+
+/** Lista de [{ "action.type": ["offsite_conversion"], "fb_pixel": ["123"] }] (pode ser vazia). */
+function isPixelTracking(value: string) {
+  const parsed = parseJson(value);
+  if (!Array.isArray(parsed) || parsed.length > 5) return false;
+  return parsed.every((spec) => {
+    if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return false;
+    const keys = Object.keys(spec);
+    const actions = (spec as Record<string, unknown>)['action.type'];
+    const pixels = (spec as Record<string, unknown>).fb_pixel;
+    return keys.every((key) => key === 'action.type' || key === 'fb_pixel') &&
+      Array.isArray(actions) && actions.every((item) => item === 'offsite_conversion') &&
+      Array.isArray(pixels) && pixels.length > 0 && pixels.every((item) => /^\d+$/.test(String(item)));
+  });
+}
 
 function updateParamsError(params: Record<string, unknown>): string | null {
   const entries = Object.entries(params).filter(([key]) => key !== 'access_token' && key !== 'appsecret_proof');
@@ -63,6 +94,10 @@ function updateParamsError(params: Record<string, unknown>): string | null {
       if (!value.trim() || value.length > 400) return 'nome inválido';
     } else if (key === 'daily_budget' || key === 'lifetime_budget') {
       if (!/^\d{1,12}$/.test(value)) return `${key} inválido`;
+    } else if (key === 'creative') {
+      if (!isCreativeRef(value)) return 'creative inválido';
+    } else if (key === 'tracking_specs') {
+      if (!isPixelTracking(value)) return 'tracking_specs inválido';
     } else {
       return `campo ${key} não liberado`;
     }

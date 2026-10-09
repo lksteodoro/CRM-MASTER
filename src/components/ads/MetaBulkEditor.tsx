@@ -9,12 +9,15 @@ import {
   ExternalLink,
   Eye,
   Layers,
+  Link2,
   Loader2,
   Pause,
   Pencil,
   Play,
+  Radar,
   RefreshCw,
   Search,
+  TextCursorInput,
   Type,
   Undo2,
   Wallet,
@@ -24,6 +27,7 @@ import { buildBatchItem, metaBatch, metaGetAll, type BatchItem } from '../../lib
 import {
   adsManagerLink,
   changesFor,
+  describeCreative,
   formatBRL,
   isAggressiveBudgetChange,
   leadsFromActions,
@@ -31,6 +35,9 @@ import {
   nextBudgetCents,
   ownBudget,
   parseReais,
+  pixelOf,
+  pixelTrackingSpecs,
+  planCreativeEdit,
   renameWith,
   reviewIssues,
   statusFiltering,
@@ -39,10 +46,16 @@ import {
   type BudgetChange,
   type BulkChange,
   type BulkLevel,
+  type CreativeEdit,
+  type CreativeEditPlan,
   type RenameRule,
   type StatusFilter,
   type StatusTone,
+  type TextEdit,
+  type UrlTagsEdit,
 } from '../../lib/metaBulkEdit';
+import { validateDestinationUrl } from '../../lib/metaCompliance';
+import { META_UTM_TEMPLATE } from '../../lib/utmBuilder';
 
 type AdAccount = { id: string; name?: string; business?: { name?: string } };
 
@@ -55,10 +68,23 @@ type Row = {
   lifetime_budget?: string;
   campaign?: { id: string; name?: string; daily_budget?: string; lifetime_budget?: string };
   adset?: { id: string; name?: string };
-  creative?: { id: string; thumbnail_url?: string };
+  creative?: Creative;
   ad_review_feedback?: unknown;
   preview_shareable_link?: string;
+  tracking_specs?: unknown;
 };
+
+type Creative = {
+  id: string;
+  name?: string;
+  thumbnail_url?: string;
+  object_story_spec?: Record<string, any>;
+  asset_feed_spec?: Record<string, any>;
+  url_tags?: string;
+  degrees_of_freedom_spec?: Record<string, any>;
+};
+
+type Pixel = { id: string; name?: string };
 
 type TargetAdSet = {
   id: string;
@@ -70,14 +96,14 @@ type TargetAdSet = {
 
 type Metrics = { spend: number; leads: number };
 type RowResult = { ok: boolean; message?: string };
-type Panel = null | 'activate' | 'pause' | 'budget' | 'rename' | 'copy';
+type Panel = null | 'activate' | 'pause' | 'budget' | 'rename' | 'copy' | 'text' | 'url' | 'tracking';
 type SortKey = 'name' | 'budget' | 'spend' | 'leads' | 'cpl';
 type Toast = { text: string; tone: 'ok' | 'warn' | 'error'; undo: BulkChange[] | null };
 
 const FIELDS: Record<BulkLevel, string> = {
   campaign: 'id,name,status,effective_status,daily_budget,lifetime_budget',
   adset: 'id,name,status,effective_status,daily_budget,lifetime_budget,campaign{id,name,daily_budget,lifetime_budget}',
-  ad: 'id,name,status,effective_status,adset{id,name},campaign{id,name},creative{id,thumbnail_url},ad_review_feedback,preview_shareable_link',
+  ad: 'id,name,status,effective_status,adset{id,name},campaign{id,name},ad_review_feedback,preview_shareable_link,tracking_specs,creative{id,name,thumbnail_url,object_story_spec,asset_feed_spec,url_tags,degrees_of_freedom_spec}',
 };
 
 const LEVELS: Array<[BulkLevel, string]> = [['campaign', 'Campanhas'], ['adset', 'Conjuntos'], ['ad', 'Anúncios']];
@@ -126,8 +152,15 @@ function batchOutcome(item: { code: number; body?: string }): RowResult {
 }
 
 /** Aplica no objeto da tela o que a Meta acabou de aceitar. */
-function applyLocal(row: Row, params: Record<string, string>): Row {
+function applyLocal(row: Row, params: Record<string, string>, creatives: Map<string, Creative>): Row {
   const next = { ...row };
+  if (params.creative) {
+    // Criativo trocado: o anúncio volta para a análise da Meta.
+    const creativeId = String(JSON.parse(params.creative).creative_id);
+    next.creative = creatives.get(creativeId) ?? { ...row.creative, id: creativeId };
+    next.effective_status = row.status === 'ACTIVE' ? 'PENDING_REVIEW' : row.effective_status;
+  }
+  if (params.tracking_specs) next.tracking_specs = JSON.parse(params.tracking_specs);
   if (params.name) next.name = params.name;
   if (params.daily_budget) next.daily_budget = params.daily_budget;
   if (params.lifetime_budget) next.lifetime_budget = params.lifetime_budget;
@@ -180,6 +213,19 @@ export function MetaBulkEditor() {
   const [targetIds, setTargetIds] = useState<Set<string>>(new Set());
   const [targetSearch, setTargetSearch] = useState('');
   const [copyStatus, setCopyStatus] = useState<'PAUSED' | 'ACTIVE'>('PAUSED');
+
+  const [textEdits, setTextEdits] = useState<Record<'primaryText' | 'title' | 'description', TextEdit>>({
+    primaryText: { mode: 'keep' },
+    title: { mode: 'keep' },
+    description: { mode: 'keep' },
+  });
+  const [urlEdit, setUrlEdit] = useState<TextEdit>({ mode: 'set', value: '' });
+  const [stripUtm, setStripUtm] = useState(true);
+  const [urlTagsEdit, setUrlTagsEdit] = useState<UrlTagsEdit>({ mode: 'keep' });
+  const [pixels, setPixels] = useState<Pixel[]>([]);
+  const [pixelChoice, setPixelChoice] = useState('');
+  // Criativos conhecidos (atuais e recém-criados), para a tela e para desfazer.
+  const creativeCache = useRef(new Map<string, Creative>());
 
   const rateNotice = useMemo(
     () => ({ onRateLimit: (seconds: number) => setToast({ text: `Limite de requisições da Meta: aguardando ${seconds}s...`, tone: 'warn', undo: null }) }),
@@ -324,13 +370,21 @@ export function MetaBulkEditor() {
   }, [filtered, metricOf]);
 
   // ── Aplicar alterações ────────────────────────────────────────────────────
-  async function applyChanges(changes: BulkChange[], label: string, undoable = true) {
+  // `failedBefore`: anúncios que já falharam numa etapa anterior (criativo novo
+  // recusado) entram no mesmo resumo.
+  async function applyChanges(changes: BulkChange[], label: string, undoable = true, failedBefore: Record<string, RowResult> = {}) {
+    const earlyFailures = Object.keys(failedBefore).length;
     if (changes.length === 0) {
-      setToast({ text: `${label}: nada mudou.`, tone: 'warn', undo: null });
+      setResults(failedBefore);
+      const firstEarly = Object.values(failedBefore)[0]?.message;
+      setToast(earlyFailures > 0
+        ? { text: `${label}: nenhum alterado. ${earlyFailures} com erro${firstEarly ? ` — ${firstEarly}` : ''}.`, tone: 'error', undo: null }
+        : { text: `${label}: nada mudou.`, tone: 'warn', undo: null });
+      setApplying(false);
       return;
     }
     setApplying(true);
-    const outcome: Record<string, RowResult> = {};
+    const outcome: Record<string, RowResult> = { ...failedBefore };
     for (let start = 0; start < changes.length; start += 50) {
       const chunk = changes.slice(start, start + 50);
       try {
@@ -347,14 +401,15 @@ export function MetaBulkEditor() {
     }
     const done = changes.filter((change) => outcome[change.id]?.ok);
     const byId = new Map(done.map((change) => [change.id, change.params]));
-    setRows((current) => current.map((row) => (byId.has(row.id) ? applyLocal(row, byId.get(row.id)!) : row)));
+    setRows((current) => current.map((row) => (byId.has(row.id) ? applyLocal(row, byId.get(row.id)!, creativeCache.current) : row)));
     setResults(outcome);
-    const failed = changes.length - done.length;
-    const firstError = changes.map((change) => outcome[change.id]).find((result) => result && !result.ok)?.message;
+    const total = changes.length + earlyFailures;
+    const failed = total - done.length;
+    const firstError = Object.values(outcome).find((result) => result && !result.ok)?.message;
     setToast({
       text: failed === 0
         ? `${label}: ${done.length} ${done.length === 1 ? 'item alterado' : 'itens alterados'}.`
-        : `${label}: ${done.length} de ${changes.length} alterados. ${failed} com erro${firstError ? ` — ${firstError}` : ''}.`,
+        : `${label}: ${done.length} de ${total} alterados. ${failed} com erro${firstError ? ` — ${firstError}` : ''}.`,
       tone: failed === 0 ? 'ok' : done.length > 0 ? 'warn' : 'error',
       undo: undoable && done.length > 0 ? undoChanges(done) : null,
     });
@@ -364,6 +419,104 @@ export function MetaBulkEditor() {
 
   const statusChanges = (status: 'ACTIVE' | 'PAUSED') =>
     changesFor(selectedRows, (row) => ({ params: { status }, previous: { status: row.status } }));
+
+  // ── Texto, URL e rastreamento dos anúncios ────────────────────────────────
+  const creativeEdit: CreativeEdit = useMemo(() => {
+    if (panel === 'text') return { primaryText: textEdits.primaryText, title: textEdits.title, description: textEdits.description };
+    if (panel === 'url') return { url: urlEdit, stripUtmFromUrl: stripUtm };
+    if (panel === 'tracking') return { urlTags: urlTagsEdit, stripUtmFromUrl: urlTagsEdit.mode === 'set' && stripUtm };
+    return {};
+  }, [panel, textEdits, urlEdit, stripUtm, urlTagsEdit]);
+
+  const creativePlans = useMemo(() => {
+    if (panel !== 'text' && panel !== 'url' && panel !== 'tracking') return [];
+    return selectedRows.map((row) => ({ row, plan: planCreativeEdit(row.creative, creativeEdit, row.name) as CreativeEditPlan }));
+  }, [panel, selectedRows, creativeEdit]);
+
+  const pixelChanges = useMemo(() => {
+    if (panel !== 'tracking' || !pixelChoice) return new Map<string, string>();
+    return new Map(selectedRows.filter((row) => pixelOf(row.tracking_specs) !== pixelChoice).map((row) => [row.id, pixelTrackingSpecs(pixelChoice)]));
+  }, [panel, pixelChoice, selectedRows]);
+
+  /**
+   * Cria um criativo novo por anúncio (texto, URL e parâmetros mudam ali) e
+   * troca no anúncio junto com o pixel, numa chamada só por anúncio. Desfazer
+   * volta o criativo e o pixel de antes.
+   */
+  async function applyAdEdits(label: string) {
+    setApplying(true);
+    const newCreativeByAd = new Map<string, string>();
+    const failed: Record<string, RowResult> = {};
+    const toCreate = creativePlans.filter((item): item is { row: Row; plan: Extract<CreativeEditPlan, { ok: true }> } => item.plan.ok);
+    for (let start = 0; start < toCreate.length; start += 50) {
+      const chunk = toCreate.slice(start, start + 50);
+      try {
+        const response = await metaBatch(chunk.map((item) => buildBatchItem(`${accountId}/adcreatives`, item.plan.params)), rateNotice);
+        response.forEach((item, index) => {
+          const { row, plan } = chunk[index];
+          let body: any = {};
+          try {
+            body = JSON.parse(item.body || '{}');
+          } catch {
+            body = {};
+          }
+          if (item.code === 200 && body.id) {
+            newCreativeByAd.set(row.id, String(body.id));
+            creativeCache.current.set(String(body.id), { ...(plan.creative as Creative), id: String(body.id), name: plan.params.name });
+          } else {
+            failed[row.id] = { ok: false, message: `Criativo novo recusado: ${body.error?.error_user_msg || body.error?.message || `HTTP ${item.code}`}` };
+          }
+        });
+      } catch (caught) {
+        const message = caught instanceof Error ? caught.message : 'Falha ao falar com a Meta.';
+        chunk.forEach(({ row }) => {
+          failed[row.id] = { ok: false, message };
+        });
+      }
+    }
+    for (const row of selectedRows) if (row.creative?.id) creativeCache.current.set(row.creative.id, row.creative);
+
+    const changes = changesFor(selectedRows.filter((row) => !failed[row.id]), (row) => {
+      const params: Record<string, string> = {};
+      const previous: Record<string, string> = {};
+      const newCreative = newCreativeByAd.get(row.id);
+      if (newCreative && row.creative?.id) {
+        params.creative = JSON.stringify({ creative_id: newCreative });
+        previous.creative = JSON.stringify({ creative_id: row.creative.id });
+      }
+      const tracking = pixelChanges.get(row.id);
+      if (tracking) {
+        params.tracking_specs = tracking;
+        previous.tracking_specs = JSON.stringify(Array.isArray(row.tracking_specs) ? row.tracking_specs : []);
+      }
+      return Object.keys(params).length > 0 ? { params, previous } : null;
+    });
+    await applyChanges(changes, label, true, failed);
+  }
+
+  const resetCreativeForms = (kind: 'text' | 'url' | 'tracking') => {
+    setTextEdits({ primaryText: { mode: 'keep' }, title: { mode: 'keep' }, description: { mode: 'keep' } });
+    setUrlEdit({ mode: 'set', value: '' });
+    setUrlTagsEdit({ mode: 'keep' });
+    setPixelChoice('');
+    // Na troca de URL os utm_ digitados ficam; ao definir parâmetros, os de dentro da URL saem.
+    setStripUtm(kind === 'tracking');
+  };
+
+  useEffect(() => {
+    if (panel !== 'tracking' || !accountId) return;
+    let alive = true;
+    metaGetAll<Pixel>(`${accountId}/adspixels`, { fields: 'id,name', limit: 50 })
+      .then((list) => {
+        if (alive) setPixels(list);
+      })
+      .catch(() => {
+        if (alive) setPixels([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [panel, accountId]);
 
   const budgetPlan = useMemo(() => {
     const items: Array<{ row: Row; field: string; before: number; after: number }> = [];
@@ -572,6 +725,13 @@ export function MetaBulkEditor() {
         <button type="button" disabled={selectedCount === 0 || applying} onClick={() => setPanel('pause')} className={ghostButton}><Pause size={13} /> Pausar</button>
         {level !== 'ad' && <button type="button" disabled={selectedCount === 0 || applying} onClick={() => setPanel('budget')} className={ghostButton}><Wallet size={13} /> Orçamento</button>}
         <button type="button" disabled={selectedCount === 0 || applying} onClick={() => setPanel('rename')} className={ghostButton}><Type size={13} /> Renomear</button>
+        {level === 'ad' && (
+          <>
+            <button type="button" disabled={selectedCount === 0 || applying} onClick={() => { resetCreativeForms('text'); setPanel('text'); }} className={ghostButton}><TextCursorInput size={13} /> Texto</button>
+            <button type="button" disabled={selectedCount === 0 || applying} onClick={() => { resetCreativeForms('url'); setPanel('url'); }} className={ghostButton}><Link2 size={13} /> URL</button>
+            <button type="button" disabled={selectedCount === 0 || applying} onClick={() => { resetCreativeForms('tracking'); setPanel('tracking'); }} className={ghostButton}><Radar size={13} /> Rastreamento</button>
+          </>
+        )}
         {level === 'ad' && <button type="button" disabled={selectedCount === 0 || applying} onClick={() => setPanel('copy')} className={ghostButton}><Copy size={13} /> Copiar para conjuntos</button>}
         {selectedCount > 0 && (
           <button type="button" onClick={() => { setSelected(new Set()); setPanel(null); }} className="ml-auto inline-flex min-h-9 items-center gap-1 rounded-lg px-2 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)]">
@@ -702,6 +862,159 @@ export function MetaBulkEditor() {
             </div>
           )}
 
+          {(panel === 'text' || panel === 'url' || panel === 'tracking') && (() => {
+            const ready = creativePlans.filter((item) => item.plan.ok);
+            const skipped = creativePlans.filter((item) => !item.plan.ok);
+            const affected = new Set([...ready.map((item) => item.row.id), ...pixelChanges.keys()]);
+            const urlProblem = panel === 'url' && urlEdit.mode === 'set' ? (urlEdit.value.trim() ? validateDestinationUrl(urlEdit.value.trim()) : 'Informe a URL nova.') : null;
+            const tagsProblem = panel === 'tracking' && urlTagsEdit.mode === 'set' && !urlTagsEdit.value.trim() ? 'Informe os parâmetros ou escolha "Remover".' : null;
+            const problem = urlProblem || tagsProblem;
+            const title = panel === 'text' ? 'Texto' : panel === 'url' ? 'URL de destino' : 'Rastreamento';
+            const modeSelect = (value: string, onChange: (mode: string) => void, label: string, options: Array<[string, string]>) => (
+              <select aria-label={label} value={value} onChange={(event) => onChange(event.target.value)} className={clsx(inputClass, 'py-1.5')}>
+                {options.map(([key, text]) => <option key={key} value={key}>{text}</option>)}
+              </select>
+            );
+            const beforeAfter = (plan: Extract<CreativeEditPlan, { ok: true }>) => {
+              const pairs: Array<[string, string, string]> = [];
+              if (panel === 'text') {
+                if (plan.before.primaryText !== plan.after.primaryText) pairs.push(['Texto', plan.before.primaryText, plan.after.primaryText]);
+                if (plan.before.title !== plan.after.title) pairs.push(['Título', plan.before.title, plan.after.title]);
+                if (plan.before.description !== plan.after.description) pairs.push(['Descrição', plan.before.description, plan.after.description]);
+              } else {
+                if (plan.before.url !== plan.after.url) pairs.push(['URL', plan.before.url, plan.after.url]);
+                if (plan.before.urlTags !== plan.after.urlTags) pairs.push(['Parâmetros', plan.before.urlTags || '(nenhum)', plan.after.urlTags || '(nenhum)']);
+              }
+              return pairs;
+            };
+            return (
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold text-[var(--color-text)]">{title} de {plural(selectedCount, 'anúncio')}</h3>
+
+                {panel === 'text' && (
+                  <div className="space-y-2">
+                    {([['primaryText', 'Texto principal'], ['title', 'Título'], ['description', 'Descrição']] as const).map(([field, label]) => {
+                      const edit = textEdits[field];
+                      const setEdit = (next: TextEdit) => setTextEdits((current) => ({ ...current, [field]: next }));
+                      return (
+                        <div key={field} className="grid items-start gap-2 sm:grid-cols-[130px_190px_1fr]">
+                          <span className="pt-2 text-xs font-semibold text-[var(--color-text)]">{label}</span>
+                          {modeSelect(edit.mode, (mode) => setEdit(mode === 'set' ? { mode: 'set', value: '' } : mode === 'replace' ? { mode: 'replace', find: '', replace: '' } : { mode: 'keep' }), `Como mudar ${label}`, [['keep', 'Não alterar'], ['set', 'Trocar por'], ['replace', 'Localizar e substituir']])}
+                          {edit.mode === 'set' && (field === 'primaryText'
+                            ? <textarea rows={3} value={edit.value} onChange={(event) => setEdit({ mode: 'set', value: event.target.value })} aria-label={`Novo ${label}`} placeholder="Texto novo" className={clsx(inputClass, 'w-full resize-y')} />
+                            : <input value={edit.value} onChange={(event) => setEdit({ mode: 'set', value: event.target.value })} aria-label={`Novo ${label}`} placeholder={`${label} novo`} className={clsx(inputClass, 'w-full')} />)}
+                          {edit.mode === 'replace' && (
+                            <div className="grid gap-2 sm:grid-cols-2">
+                              <input value={edit.find} onChange={(event) => setEdit({ ...edit, find: event.target.value })} aria-label={`Localizar em ${label}`} placeholder="Localizar" className={inputClass} />
+                              <input value={edit.replace} onChange={(event) => setEdit({ ...edit, replace: event.target.value })} aria-label={`Substituir em ${label}`} placeholder="Substituir por" className={inputClass} />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                    <p className="text-[11px] leading-5 text-[var(--color-text-faint)]">Em anúncios com várias opções de texto, "Localizar e substituir" muda todas; "Trocar por" deixa uma só.</p>
+                  </div>
+                )}
+
+                {panel === 'url' && (
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {modeSelect(urlEdit.mode, (mode) => setUrlEdit(mode === 'replace' ? { mode: 'replace', find: '', replace: '' } : { mode: 'set', value: '' }), 'Como mudar a URL', [['set', 'Trocar por'], ['replace', 'Localizar e substituir']])}
+                      {urlEdit.mode === 'set' && <input value={urlEdit.value} onChange={(event) => setUrlEdit({ mode: 'set', value: event.target.value })} aria-label="URL nova" placeholder="https://..." className={clsx(inputClass, 'min-w-[280px] flex-1')} />}
+                      {urlEdit.mode === 'replace' && (
+                        <>
+                          <input value={urlEdit.find} onChange={(event) => setUrlEdit({ ...urlEdit, find: event.target.value })} aria-label="Localizar na URL" placeholder="Localizar (ex.: /mba-black)" className={clsx(inputClass, 'min-w-[200px] flex-1')} />
+                          <input value={urlEdit.replace} onChange={(event) => setUrlEdit({ ...urlEdit, replace: event.target.value })} aria-label="Substituir na URL" placeholder="Substituir por (ex.: /mba)" className={clsx(inputClass, 'min-w-[200px] flex-1')} />
+                        </>
+                      )}
+                    </div>
+                    <label className="flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
+                      <input type="checkbox" checked={stripUtm} onChange={(event) => setStripUtm(event.target.checked)} />
+                      Tirar os parâmetros utm_ que estão dentro da URL
+                    </label>
+                    {urlProblem && <p role="alert" className="text-xs text-red-300">{urlProblem}</p>}
+                    <p className="text-[11px] leading-5 text-[var(--color-text-faint)]">Anúncios de WhatsApp, Messenger e formulário não têm URL de site e ficam de fora.</p>
+                  </div>
+                )}
+
+                {panel === 'tracking' && (
+                  <div className="space-y-3">
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-semibold text-[var(--color-text)]">Parâmetros de URL</span>
+                        {modeSelect(urlTagsEdit.mode, (mode) => setUrlTagsEdit(mode === 'set' ? { mode: 'set', value: META_UTM_TEMPLATE.replace(/^\?/, '') } : mode === 'remove' ? { mode: 'remove' } : { mode: 'keep' }), 'Parâmetros de URL', [['keep', 'Não alterar'], ['set', 'Definir'], ['remove', 'Remover']])}
+                      </div>
+                      {urlTagsEdit.mode === 'set' && (
+                        <>
+                          <textarea rows={2} value={urlTagsEdit.value} onChange={(event) => setUrlTagsEdit({ mode: 'set', value: event.target.value })} aria-label="Parâmetros de URL" className={clsx(inputClass, 'w-full resize-y font-mono text-xs')} />
+                          <div className="flex flex-wrap items-center gap-3">
+                            <button type="button" onClick={() => setUrlTagsEdit({ mode: 'set', value: META_UTM_TEMPLATE.replace(/^\?/, '') })} className={ghostButton}>Usar o padrão da agência</button>
+                            <label className="flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
+                              <input type="checkbox" checked={stripUtm} onChange={(event) => setStripUtm(event.target.checked)} />
+                              Tirar os utm_ de dentro da URL (evita parâmetro duplicado)
+                            </label>
+                          </div>
+                          <p className="text-[11px] leading-5 text-[var(--color-text-faint)]">Variáveis da Meta: {'{{campaign.name}}'}, {'{{adset.name}}'}, {'{{ad.name}}'}, {'{{placement}}'}, {'{{ad.id}}'}.</p>
+                        </>
+                      )}
+                      {tagsProblem && <p role="alert" className="text-xs text-red-300">{tagsProblem}</p>}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-semibold text-[var(--color-text)]">Pixel (eventos do site)</span>
+                      <select aria-label="Pixel" value={pixelChoice} onChange={(event) => setPixelChoice(event.target.value)} className={clsx(inputClass, 'py-1.5')}>
+                        <option value="">Não alterar</option>
+                        {pixels.map((pixel) => <option key={pixel.id} value={pixel.id}>{pixel.name || pixel.id}</option>)}
+                      </select>
+                      {pixelChoice && <span className="text-xs text-[var(--color-text-muted)]">{pixelChanges.size} anúncio(s) mudam de pixel (sem criativo novo).</span>}
+                    </div>
+                  </div>
+                )}
+
+                {ready.length > 0 && (
+                  <p className="flex items-start gap-2 rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-100">
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                    A Meta não deixa editar um criativo: para cada anúncio o sistema cria um criativo novo com a mudança e troca no anúncio. O anúncio volta para análise e a publicação nova começa sem as curtidas e comentários da anterior. Desfazer volta o criativo antigo.
+                  </p>
+                )}
+
+                {ready.length > 0 && (
+                  <ul className="max-h-60 space-y-2 overflow-y-auto rounded-xl border border-[var(--color-border)] p-2.5 text-xs">
+                    {ready.slice(0, 40).map(({ row, plan }) => plan.ok && (
+                      <li key={row.id} className="space-y-0.5">
+                        <span className="block truncate font-semibold text-[var(--color-text)]">{row.name}</span>
+                        {beforeAfter(plan).map(([label, before, after]) => (
+                          <span key={label} className="grid gap-x-2 sm:grid-cols-[80px_1fr_1fr]">
+                            <span className="text-[var(--color-text-faint)]">{label}</span>
+                            <span className="truncate text-[var(--color-text-muted)] line-through decoration-[var(--color-text-faint)]" title={before}>{before || '(vazio)'}</span>
+                            <span className="truncate text-[var(--color-text)]" title={after}>{after || '(vazio)'}</span>
+                          </span>
+                        ))}
+                      </li>
+                    ))}
+                    {ready.length > 40 && <li className="text-[var(--color-text-faint)]">e mais {ready.length - 40}...</li>}
+                  </ul>
+                )}
+
+                {skipped.length > 0 && (
+                  <details className="text-xs text-[var(--color-text-muted)]">
+                    <summary className="cursor-pointer">{skipped.length} anúncio(s) ficam como estão</summary>
+                    <ul className="mt-1 space-y-0.5 pl-4">
+                      {skipped.slice(0, 30).map(({ row, plan }) => !plan.ok && <li key={row.id}><span className="text-[var(--color-text)]">{row.name}</span>: {plan.reason}</li>)}
+                    </ul>
+                  </details>
+                )}
+
+                <div className="flex gap-2">
+                  <button type="button" disabled={applying || affected.size === 0 || Boolean(problem)} onClick={() => void applyAdEdits(title)}
+                    className="inline-flex min-h-10 items-center gap-2 rounded-xl bg-[var(--color-brand)] px-4 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-50">
+                    {applying ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />} Aplicar em {affected.size}
+                  </button>
+                  <button type="button" onClick={() => setPanel(null)} className={ghostButton}>Cancelar</button>
+                </div>
+              </div>
+            );
+          })()}
+
           {panel === 'copy' && (
             <div className="space-y-3">
               <h3 className="text-sm font-semibold text-[var(--color-text)]">Copiar {plural(selectedCount, 'anúncio')} para outros conjuntos</h3>
@@ -818,6 +1131,18 @@ export function MetaBulkEditor() {
                         <span className="block truncate text-[11px] text-[var(--color-text-faint)]">
                           {level === 'campaign' ? row.id : level === 'adset' ? row.campaign?.name : `${row.adset?.name ?? ''} · ${row.campaign?.name ?? ''}`}
                         </span>
+                        {level === 'ad' && (() => {
+                          const info = describeCreative(row.creative);
+                          const hasUtm = Boolean(info.urlTags) || /[?&]utm_/i.test(info.url);
+                          if (!info.url && !info.urlTags) return null;
+                          return (
+                            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-[var(--color-text-muted)]">
+                              <Link2 size={11} className="shrink-0" aria-hidden="true" />
+                              <span className="truncate" title={`${info.url}${info.urlTags ? `\nParâmetros: ${info.urlTags}` : ''}`}>{info.url.replace(/^https?:\/\//, '') || 'sem URL de site'}</span>
+                              {hasUtm && <span className="shrink-0 rounded border border-sky-400/30 px-1 text-[9px] font-semibold text-sky-200" title={info.urlTags || 'UTM dentro da URL'}>UTM</span>}
+                            </span>
+                          );
+                        })()}
                         {issues.length > 0 && <span className="mt-0.5 block truncate text-[11px] text-red-300" title={issues.join(' · ')}>{issues.join(' · ')}</span>}
                       </span>
                       {result && (result.ok
