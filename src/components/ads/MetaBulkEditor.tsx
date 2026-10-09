@@ -189,6 +189,11 @@ export function MetaBulkEditor() {
   const [period, setPeriod] = useState(prefs.period || 'last_7d');
   const [search, setSearch] = useState('');
   const [campaignFilter, setCampaignFilter] = useState('');
+  // Texto, URL e rastreamento vivem no anúncio. Pedidos a partir de campanhas
+  // ou conjuntos abrem os anúncios deles, já marcados.
+  const [parentScope, setParentScope] = useState<{ level: 'campaign' | 'adset'; ids: string[]; names: string[] } | null>(null);
+  const [pendingPanel, setPendingPanel] = useState<'text' | 'url' | 'tracking' | null>(null);
+  const [rowsLevel, setRowsLevel] = useState<BulkLevel | null>(null);
 
   const [rows, setRows] = useState<Row[]>([]);
   const [metrics, setMetrics] = useState<Record<string, Metrics>>({});
@@ -268,7 +273,10 @@ export function MetaBulkEditor() {
 
     metaGetAll<Row>(`${accountId}/${LEVEL_EDGE[level]}`, { fields: FIELDS[level], filtering: statusFiltering(level, statusFilter), limit: 200 }, { maxPages: 10, ...rateNotice })
       .then((list) => {
-        if (alive) setRows(list.map((row) => ({ ...row, name: row.name || row.id })));
+        if (alive) {
+          setRows(list.map((row) => ({ ...row, name: row.name || row.id })));
+          setRowsLevel(level);
+        }
       })
       .catch((caught) => {
         if (alive) {
@@ -316,7 +324,8 @@ export function MetaBulkEditor() {
     const list = rows.filter(
       (row) =>
         (!term || row.name.toLowerCase().includes(term) || row.id.includes(term)) &&
-        (!campaignFilter || row.campaign?.id === campaignFilter)
+        (!campaignFilter || row.campaign?.id === campaignFilter) &&
+        (!parentScope || level !== 'ad' || parentScope.ids.includes((parentScope.level === 'campaign' ? row.campaign?.id : row.adset?.id) ?? ''))
     );
     const value = (row: Row): number | string => {
       const metric = metricOf(row.id);
@@ -332,7 +341,7 @@ export function MetaBulkEditor() {
       const order = typeof va === 'string' ? va.localeCompare(String(vb), 'pt-BR') : va - (vb as number);
       return sort.dir === 'asc' ? order : -order;
     });
-  }, [rows, search, campaignFilter, sort, metricOf]);
+  }, [rows, search, campaignFilter, parentScope, level, sort, metricOf]);
 
   const shown = filtered.slice(0, visibleCount);
   const selectedRows = useMemo(() => rows.filter((row) => selected.has(row.id)), [rows, selected]);
@@ -503,6 +512,38 @@ export function MetaBulkEditor() {
     setStripUtm(kind === 'tracking');
   };
 
+  const adPanelHint = level === 'ad'
+    ? undefined
+    : `Abre os anúncios ${level === 'campaign' ? 'das campanhas' : 'dos conjuntos'} marcados para editar`;
+
+  function openAdPanel(kind: 'text' | 'url' | 'tracking') {
+    if (level === 'ad') {
+      resetCreativeForms(kind);
+      setPanel(kind);
+      return;
+    }
+    const scoped = rows.filter((row) => selected.has(row.id));
+    setParentScope({ level, ids: scoped.map((row) => row.id), names: scoped.map((row) => row.name) });
+    setPendingPanel(kind);
+    setCampaignFilter('');
+    setLevel('ad');
+  }
+
+  // Depois que os anúncios carregam, marca os das campanhas/conjuntos escolhidos e abre o painel.
+  useEffect(() => {
+    if (!pendingPanel || !parentScope || loading || rowsLevel !== 'ad' || level !== 'ad') return;
+    const inScope = rows.filter((row) => parentScope.ids.includes((parentScope.level === 'campaign' ? row.campaign?.id : row.adset?.id) ?? ''));
+    const kind = pendingPanel;
+    setPendingPanel(null);
+    if (inScope.length === 0) {
+      setToast({ text: `Nenhum anúncio ${parentScope.level === 'campaign' ? 'nessas campanhas' : 'nesses conjuntos'} com o filtro de status atual.`, tone: 'warn', undo: null });
+      return;
+    }
+    setSelected(new Set(inScope.map((row) => row.id)));
+    resetCreativeForms(kind);
+    setPanel(kind);
+  }, [pendingPanel, parentScope, loading, rowsLevel, level, rows]);
+
   useEffect(() => {
     if (panel !== 'tracking' || !accountId) return;
     let alive = true;
@@ -667,7 +708,7 @@ export function MetaBulkEditor() {
       <div className="mt-5 grid gap-3 lg:grid-cols-[minmax(240px,1.2fr)_auto_auto]">
         <label className="flex flex-col gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-text-faint)]">
           Conta de anúncio
-          <select value={accountId} onChange={(event) => { setAccountId(event.target.value); setCampaignFilter(''); }} className={clsx(inputClass, 'normal-case tracking-normal')}>
+          <select value={accountId} onChange={(event) => { setAccountId(event.target.value); setCampaignFilter(''); setParentScope(null); }} className={clsx(inputClass, 'normal-case tracking-normal')}>
             {accounts.length === 0 && <option value="">Carregando contas...</option>}
             {accounts.map((account) => (
               <option key={account.id} value={account.id}>
@@ -680,7 +721,7 @@ export function MetaBulkEditor() {
           <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-text-faint)]">Nível</span>
           <div role="radiogroup" aria-label="Nível" className="inline-flex rounded-xl border border-[var(--color-border)] p-0.5">
             {LEVELS.map(([key, label]) => (
-              <button key={key} type="button" role="radio" aria-checked={level === key} onClick={() => { setLevel(key); setCampaignFilter(''); }}
+              <button key={key} type="button" role="radio" aria-checked={level === key} onClick={() => { setLevel(key); setCampaignFilter(''); setParentScope(null); }}
                 className={clsx('min-h-9 rounded-lg px-3 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/50', level === key ? 'bg-[var(--color-brand)] text-white' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]')}>
                 {label}
               </button>
@@ -725,13 +766,9 @@ export function MetaBulkEditor() {
         <button type="button" disabled={selectedCount === 0 || applying} onClick={() => setPanel('pause')} className={ghostButton}><Pause size={13} /> Pausar</button>
         {level !== 'ad' && <button type="button" disabled={selectedCount === 0 || applying} onClick={() => setPanel('budget')} className={ghostButton}><Wallet size={13} /> Orçamento</button>}
         <button type="button" disabled={selectedCount === 0 || applying} onClick={() => setPanel('rename')} className={ghostButton}><Type size={13} /> Renomear</button>
-        {level === 'ad' && (
-          <>
-            <button type="button" disabled={selectedCount === 0 || applying} onClick={() => { resetCreativeForms('text'); setPanel('text'); }} className={ghostButton}><TextCursorInput size={13} /> Texto</button>
-            <button type="button" disabled={selectedCount === 0 || applying} onClick={() => { resetCreativeForms('url'); setPanel('url'); }} className={ghostButton}><Link2 size={13} /> URL</button>
-            <button type="button" disabled={selectedCount === 0 || applying} onClick={() => { resetCreativeForms('tracking'); setPanel('tracking'); }} className={ghostButton}><Radar size={13} /> Rastreamento</button>
-          </>
-        )}
+        <button type="button" disabled={selectedCount === 0 || applying} onClick={() => openAdPanel('text')} title={adPanelHint} className={ghostButton}><TextCursorInput size={13} /> Texto</button>
+        <button type="button" disabled={selectedCount === 0 || applying} onClick={() => openAdPanel('url')} title={adPanelHint} className={ghostButton}><Link2 size={13} /> URL</button>
+        <button type="button" disabled={selectedCount === 0 || applying} onClick={() => openAdPanel('tracking')} title={adPanelHint} className={ghostButton}><Radar size={13} /> Rastreamento</button>
         {level === 'ad' && <button type="button" disabled={selectedCount === 0 || applying} onClick={() => setPanel('copy')} className={ghostButton}><Copy size={13} /> Copiar para conjuntos</button>}
         {selectedCount > 0 && (
           <button type="button" onClick={() => { setSelected(new Set()); setPanel(null); }} className="ml-auto inline-flex min-h-9 items-center gap-1 rounded-lg px-2 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)]">
@@ -932,7 +969,7 @@ export function MetaBulkEditor() {
                       <input type="checkbox" checked={stripUtm} onChange={(event) => setStripUtm(event.target.checked)} />
                       Tirar os parâmetros utm_ que estão dentro da URL
                     </label>
-                    {urlProblem && <p role="alert" className="text-xs text-red-300">{urlProblem}</p>}
+                    {urlProblem && urlEdit.mode === 'set' && urlEdit.value.trim() && <p role="alert" className="text-xs text-red-300">{urlProblem}</p>}
                     <p className="text-[11px] leading-5 text-[var(--color-text-faint)]">Anúncios de WhatsApp, Messenger e formulário não têm URL de site e ficam de fora.</p>
                   </div>
                 )}
@@ -1071,6 +1108,17 @@ export function MetaBulkEditor() {
             </button>
           )}
           <button type="button" onClick={() => setToast(null)} aria-label="Fechar aviso" className="rounded p-1 opacity-70 hover:opacity-100"><X size={14} /></button>
+        </div>
+      )}
+
+      {parentScope && level === 'ad' && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-[var(--color-brand)]/35 bg-[var(--color-brand)]/[0.06] px-3 py-2 text-xs text-[var(--color-text)]">
+          <span className="min-w-0 flex-1 truncate" title={parentScope.names.join(' · ')}>
+            Anúncios {parentScope.level === 'campaign' ? 'das campanhas' : 'dos conjuntos'}: <strong>{parentScope.names.slice(0, 3).join(' · ')}</strong>{parentScope.names.length > 3 ? ` e mais ${parentScope.names.length - 3}` : ''}
+          </span>
+          <button type="button" onClick={() => setParentScope(null)} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[var(--color-text-muted)] hover:text-[var(--color-text)]">
+            <X size={12} /> Ver todos os anúncios
+          </button>
         </div>
       )}
 
