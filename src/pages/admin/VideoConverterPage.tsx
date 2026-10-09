@@ -152,7 +152,15 @@ export function VideoConverterPage() {
       setFolder(await pickOutputFolder());
       setMessage(null);
     } catch (caught) {
-      if (caught instanceof DOMException && caught.name === 'AbortError') return;
+      // O Chrome devolve o mesmo erro quando a pessoa fecha a janela, quando recusa
+      // a permissão de editar e quando a pasta é protegida; explica os três casos.
+      if (caught instanceof DOMException && caught.name === 'AbortError') {
+        setMessage(
+          'Nenhuma pasta foi escolhida. Se o navegador recusou a pasta (algumas do sistema, como a raiz do disco, são bloqueadas), ' +
+            'crie uma subpasta, por exemplo D:\\VIDEOS CONVERTIDOS, e escolha ela. Quando o navegador perguntar, clique em permitir editar os arquivos.',
+        );
+        return;
+      }
       setMessage(`Não foi possível usar a pasta: ${caught instanceof Error ? caught.message : String(caught)}`);
     }
   }
@@ -425,7 +433,7 @@ export function VideoConverterPage() {
                 {running
                   ? `Convertendo ${PARALLEL_JOBS} por vez · ${formatDuration(elapsed)} decorrido. Não feche esta aba.`
                   : done.length > 0 && sizeBefore > 0
-                    ? `De ${formatBytes(sizeBefore)} para ${formatBytes(sizeAfter)} (${sizeAfter <= sizeBefore ? '-' : '+'}${Math.abs(Math.round((1 - sizeAfter / sizeBefore) * 100))}%)${finishedAt && startedAt ? ` em ${formatDuration(elapsed)}` : ''}.`
+                    ? `De ${formatBytes(sizeBefore)} para ${formatBytes(sizeAfter)} (${sizeAfter <= sizeBefore ? '-' : '+'}${Math.abs(Math.round((1 - sizeAfter / sizeBefore) * 100))}%)${finishedAt && startedAt ? ` em ${formatDuration(elapsed)}` : ''}.${mode === 'folder' && folder ? ` Salvos na pasta "${folder.name}".` : ''}`
                     : 'Confira o plano de cada vídeo e clique em converter.'}
               </p>
             </div>
