@@ -13,7 +13,8 @@ export type AgencyToolKey =
   | 'zpl_pdf'
   | 'consumer_success'
   | 'utm_tester'
-  | 'video_converter';
+  | 'video_converter'
+  | 'optimization_ia';
 
 export type AgencyToolDefinition = { key: AgencyToolKey; label: string; path: string };
 export type AgencyToolGroup = { label: string; tools: AgencyToolDefinition[] };
@@ -44,6 +45,7 @@ export const agencyToolGroups: AgencyToolGroup[] = [
       },
       { key: 'utm_tester', label: 'Criador de URL de teste', path: '/agency/ferramentas/url-de-teste' },
       { key: 'video_converter', label: 'Conversor de vídeo', path: '/agency/ferramentas/conversor-de-video' },
+      { key: 'optimization_ia', label: 'Otimização IA', path: '/agency/otimizacao-ia' },
     ],
   },
 ];

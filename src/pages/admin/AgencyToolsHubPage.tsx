@@ -37,6 +37,7 @@ const toolMeta: Record<AgencyToolKey, { icon: ComponentType<{ size?: number }>; 
   zpl_pdf: { icon: Printer, tone: 'info', description: 'Converte etiquetas ZPL em PDF pronto para imprimir.' },
   consumer_success: { icon: MessagesSquare, tone: 'good', description: 'Inbox dos grupos de WhatsApp e mensagens programadas.' },
   video_converter: { icon: Film, tone: 'violet', description: 'Converte vídeos em massa para MP4 H.264/AAC, leves e prontos para o anúncio.' },
+  optimization_ia: { icon: Sparkles, tone: 'brand', description: 'Acompanha gasto, leads e CPL das campanhas da conta Meta conectada. Somente leitura.' },
   utm_tester: { icon: FlaskConical, tone: 'warn', description: 'Gera o link de teste e o link com UTMs para o anúncio.' },
   'disparo.dashboard': { icon: LayoutDashboard, tone: 'brand', description: 'Visão geral dos disparos e dos resultados.' },
   'disparo.redirects': { icon: Link2, tone: 'info', description: 'Links por cliente, randomizador e analytics de cliques.' },

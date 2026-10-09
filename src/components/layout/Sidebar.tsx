@@ -15,6 +15,7 @@ import {
   Send,
   Wrench,
   WandSparkles,
+  Sparkles,
   ChevronDown,
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -81,6 +82,12 @@ const adminNav: AdminNavItem[] = [
       { to: '/agency/ferramentas/url-de-teste', label: 'Criador de URL de teste', tool: 'utm_tester' },
       { to: '/agency/ferramentas/conversor-de-video', label: 'Conversor de vídeo', tool: 'video_converter' },
     ],
+  },
+  {
+    to: '/agency/otimizacao-ia',
+    icon: Sparkles,
+    label: 'Otimização IA',
+    children: [{ to: '/agency/otimizacao-ia', label: 'Visão geral', tool: 'optimization_ia' }],
   },
 ];
 
