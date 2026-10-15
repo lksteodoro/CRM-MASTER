@@ -5,6 +5,7 @@ import {
   ArrowDown,
   ArrowUp,
   CheckCircle2,
+  ChevronRight,
   Copy,
   ExternalLink,
   Eye,
@@ -110,6 +111,17 @@ const LEVELS: Array<[BulkLevel, string]> = [['campaign', 'Campanhas'], ['adset',
 const STATUS_FILTERS: Array<[StatusFilter, string]> = [['all', 'Todos'], ['active', 'Ativos'], ['paused', 'Pausados'], ['issues', 'Em análise ou com problema']];
 const PERIODS: Array<[string, string]> = [['today', 'Hoje'], ['yesterday', 'Ontem'], ['last_7d', 'Últimos 7 dias'], ['last_30d', 'Últimos 30 dias']];
 const PAGE_SIZE = 200;
+const LEVEL_RANK: Record<BulkLevel, number> = { campaign: 0, adset: 1, ad: 2 };
+type ParentScope = { level: 'campaign' | 'adset'; ids: string[]; names: string[] };
+
+/** O escopo só vale para níveis abaixo dele (campanha → conjuntos e anúncios; conjunto → anúncios). */
+function scopeFor(scope: ParentScope | null, level: BulkLevel) {
+  return scope && LEVEL_RANK[scope.level] < LEVEL_RANK[level] ? scope : null;
+}
+
+function scopeParentId(scope: ParentScope, row: Row) {
+  return (scope.level === 'campaign' ? row.campaign?.id : row.adset?.id) ?? '';
+}
 const PREFS_KEY = 'meta_bulk_editor_prefs';
 
 const TONE_CLASS: Record<StatusTone, string> = {
@@ -191,7 +203,10 @@ export function MetaBulkEditor() {
   const [campaignFilter, setCampaignFilter] = useState('');
   // Texto, URL e rastreamento vivem no anúncio. Pedidos a partir de campanhas
   // ou conjuntos abrem os anúncios deles, já marcados.
-  const [parentScope, setParentScope] = useState<{ level: 'campaign' | 'adset'; ids: string[]; names: string[] } | null>(null);
+  const [parentScope, setParentScope] = useState<ParentScope | null>(null);
+  const activeScope = scopeFor(parentScope, level);
+  // Chave estável para recarregar só quando o escopo efetivo muda.
+  const scopeKey = activeScope ? `${activeScope.level}:${activeScope.ids.join(',')}` : '';
   const [pendingPanel, setPendingPanel] = useState<'text' | 'url' | 'tracking' | null>(null);
   const [rowsLevel, setRowsLevel] = useState<BulkLevel | null>(null);
 
@@ -271,7 +286,12 @@ export function MetaBulkEditor() {
     setPanel(null);
     setVisibleCount(PAGE_SIZE);
 
-    metaGetAll<Row>(`${accountId}/${LEVEL_EDGE[level]}`, { fields: FIELDS[level], filtering: statusFiltering(level, statusFilter), limit: level === 'ad' ? 50 : 200 }, { maxPages: level === 'ad' ? 40 : 10, ...rateNotice })
+    // Com campanha ou conjunto escolhido, a Meta já devolve só os filhos dele, em vez da conta inteira.
+    const [scopeLevel, scopeIds] = scopeKey ? [scopeKey.slice(0, scopeKey.indexOf(':')), scopeKey.slice(scopeKey.indexOf(':') + 1).split(',')] : ['', []];
+    const parentFilter = scopeLevel ? [{ field: `${scopeLevel}.id`, operator: 'IN', value: scopeIds }] : [];
+    const filtering = JSON.stringify([...JSON.parse(statusFiltering(level, statusFilter)), ...parentFilter]);
+
+    metaGetAll<Row>(`${accountId}/${LEVEL_EDGE[level]}`, { fields: FIELDS[level], filtering, limit: level === 'ad' ? 50 : 200 }, { maxPages: level === 'ad' ? 40 : 10, ...rateNotice })
       .then((list) => {
         if (alive) {
           setRows(list.map((row) => ({ ...row, name: row.name || row.id })));
@@ -288,7 +308,7 @@ export function MetaBulkEditor() {
         if (alive) setLoading(false);
       });
 
-    metaGetAll<Record<string, any>>(`${accountId}/insights`, { level, fields: `${level}_id,spend,actions`, date_preset: period, limit: 500 }, { maxPages: 10, ...rateNotice })
+    metaGetAll<Record<string, any>>(`${accountId}/insights`, { level, fields: `${level}_id,spend,actions`, date_preset: period, limit: 500, ...(parentFilter.length ? { filtering: JSON.stringify(parentFilter) } : {}) }, { maxPages: 10, ...rateNotice })
       .then((list) => {
         if (!alive) return;
         const map: Record<string, Metrics> = {};
@@ -308,7 +328,7 @@ export function MetaBulkEditor() {
     return () => {
       alive = false;
     };
-  }, [accountId, level, statusFilter, period, reloadKey, rateNotice]);
+  }, [accountId, level, statusFilter, period, reloadKey, rateNotice, scopeKey]);
 
   // ── Filtro, ordem e seleção ───────────────────────────────────────────────
   const campaigns = useMemo(() => {
@@ -325,7 +345,7 @@ export function MetaBulkEditor() {
       (row) =>
         (!term || row.name.toLowerCase().includes(term) || row.id.includes(term)) &&
         (!campaignFilter || row.campaign?.id === campaignFilter) &&
-        (!parentScope || level !== 'ad' || parentScope.ids.includes((parentScope.level === 'campaign' ? row.campaign?.id : row.adset?.id) ?? ''))
+        (!activeScope || activeScope.ids.includes(scopeParentId(activeScope, row)))
     );
     const value = (row: Row): number | string => {
       const metric = metricOf(row.id);
@@ -341,7 +361,7 @@ export function MetaBulkEditor() {
       const order = typeof va === 'string' ? va.localeCompare(String(vb), 'pt-BR') : va - (vb as number);
       return sort.dir === 'asc' ? order : -order;
     });
-  }, [rows, search, campaignFilter, parentScope, level, sort, metricOf]);
+  }, [rows, search, campaignFilter, activeScope, sort, metricOf]);
 
   const shown = filtered.slice(0, visibleCount);
   const selectedRows = useMemo(() => rows.filter((row) => selected.has(row.id)), [rows, selected]);
@@ -527,6 +547,27 @@ export function MetaBulkEditor() {
     setPendingPanel(kind);
     setCampaignFilter('');
     setLevel('ad');
+  }
+
+  /** Troca de nível. Descendo com itens marcados, o próximo nível mostra só os filhos deles. */
+  function changeLevel(next: BulkLevel) {
+    if (next === level) return;
+    setCampaignFilter('');
+    if (LEVEL_RANK[next] > LEVEL_RANK[level] && selected.size > 0) {
+      const picked = rows.filter((row) => selected.has(row.id));
+      setParentScope({ level: level as ParentScope['level'], ids: picked.map((row) => row.id), names: picked.map((row) => row.name) });
+    } else if (!scopeFor(parentScope, next)) {
+      setParentScope(null);
+    }
+    setLevel(next);
+  }
+
+  /** Atalho da linha: abre os conjuntos da campanha ou os anúncios do conjunto. */
+  function drillInto(row: Row) {
+    if (level === 'ad') return;
+    setCampaignFilter('');
+    setParentScope({ level: level as ParentScope['level'], ids: [row.id], names: [row.name] });
+    setLevel(level === 'campaign' ? 'adset' : 'ad');
   }
 
   // Depois que os anúncios carregam, marca os das campanhas/conjuntos escolhidos e abre o painel.
@@ -721,7 +762,7 @@ export function MetaBulkEditor() {
           <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-text-faint)]">Nível</span>
           <div role="radiogroup" aria-label="Nível" className="inline-flex rounded-xl border border-[var(--color-border)] p-0.5">
             {LEVELS.map(([key, label]) => (
-              <button key={key} type="button" role="radio" aria-checked={level === key} onClick={() => { setLevel(key); setCampaignFilter(''); setParentScope(null); }}
+              <button key={key} type="button" role="radio" aria-checked={level === key} onClick={() => changeLevel(key)}
                 className={clsx('min-h-9 rounded-lg px-3 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/50', level === key ? 'bg-[var(--color-brand)] text-white' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]')}>
                 {label}
               </button>
@@ -1111,13 +1152,13 @@ export function MetaBulkEditor() {
         </div>
       )}
 
-      {parentScope && level === 'ad' && (
+      {activeScope && (
         <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-[var(--color-brand)]/35 bg-[var(--color-brand)]/[0.06] px-3 py-2 text-xs text-[var(--color-text)]">
-          <span className="min-w-0 flex-1 truncate" title={parentScope.names.join(' · ')}>
-            Anúncios {parentScope.level === 'campaign' ? 'das campanhas' : 'dos conjuntos'}: <strong>{parentScope.names.slice(0, 3).join(' · ')}</strong>{parentScope.names.length > 3 ? ` e mais ${parentScope.names.length - 3}` : ''}
+          <span className="min-w-0 flex-1 truncate" title={activeScope.names.join(' · ')}>
+            {level === 'adset' ? 'Conjuntos' : 'Anúncios'} {activeScope.level === 'campaign' ? (activeScope.ids.length > 1 ? 'das campanhas' : 'da campanha') : (activeScope.ids.length > 1 ? 'dos conjuntos' : 'do conjunto')}: <strong>{activeScope.names.slice(0, 3).join(' · ')}</strong>{activeScope.names.length > 3 ? ` e mais ${activeScope.names.length - 3}` : ''}
           </span>
           <button type="button" onClick={() => setParentScope(null)} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[var(--color-text-muted)] hover:text-[var(--color-text)]">
-            <X size={12} /> Ver todos os anúncios
+            <X size={12} /> Ver todos da conta
           </button>
         </div>
       )}
@@ -1179,6 +1220,11 @@ export function MetaBulkEditor() {
                         <span className="block truncate text-[11px] text-[var(--color-text-faint)]">
                           {level === 'campaign' ? row.id : level === 'adset' ? row.campaign?.name : `${row.adset?.name ?? ''} · ${row.campaign?.name ?? ''}`}
                         </span>
+                        {level !== 'ad' && (
+                          <button type="button" onClick={() => drillInto(row)} className="mt-0.5 inline-flex items-center gap-0.5 rounded text-[11px] font-medium text-[var(--color-brand)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)]/50">
+                            {level === 'campaign' ? 'Ver conjuntos' : 'Ver anúncios'} <ChevronRight size={12} aria-hidden="true" />
+                          </button>
+                        )}
                         {level === 'ad' && (() => {
                           const info = describeCreative(row.creative);
                           const hasUtm = Boolean(info.urlTags) || /[?&]utm_/i.test(info.url);
