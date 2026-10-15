@@ -100,6 +100,19 @@ type RowResult = { ok: boolean; message?: string };
 type Panel = null | 'activate' | 'pause' | 'budget' | 'rename' | 'copy' | 'text' | 'url' | 'tracking';
 type SortKey = 'name' | 'budget' | 'spend' | 'leads' | 'cpl';
 type Toast = { text: string; tone: 'ok' | 'warn' | 'error'; undo: BulkChange[] | null };
+type ProgressLog = { key: string; name: string; ok: boolean; text: string };
+type Progress = {
+  title: string;
+  step: string;
+  done: number;
+  total: number;
+  logs: ProgressLog[];
+  finished: boolean;
+  summary?: string;
+  tone?: Toast['tone'];
+};
+/** Itens por chamada em lote. Menor que o máximo da Meta (50) para o progresso andar em passos curtos. */
+const BATCH_SIZE = 25;
 
 const FIELDS: Record<BulkLevel, string> = {
   campaign: 'id,name,status,effective_status,daily_budget,lifetime_budget',
@@ -224,6 +237,7 @@ export function MetaBulkEditor() {
   const [applying, setApplying] = useState(false);
   const [results, setResults] = useState<Record<string, RowResult>>({});
   const [toast, setToast] = useState<Toast | null>(null);
+  const [progress, setProgress] = useState<Progress | null>(null);
   const [editingBudget, setEditingBudget] = useState<{ id: string; value: string } | null>(null);
 
   const [budgetChange, setBudgetChange] = useState<BudgetChange>({ mode: 'increase', value: 20 });
@@ -401,21 +415,48 @@ export function MetaBulkEditor() {
   // ── Aplicar alterações ────────────────────────────────────────────────────
   // `failedBefore`: anúncios que já falharam numa etapa anterior (criativo novo
   // recusado) entram no mesmo resumo.
-  async function applyChanges(changes: BulkChange[], label: string, undoable = true, failedBefore: Record<string, RowResult> = {}) {
+  // ── Janela de progresso ───────────────────────────────────────────────────
+  const startProgress = (title: string, total: number, step: string) =>
+    setProgress({ title, step, done: 0, total, logs: [], finished: false });
+  const stepProgress = (step: string, total?: number) =>
+    setProgress((current) => current && { ...current, step, total: total ?? current.total });
+  const logProgress = (entries: ProgressLog[]) =>
+    setProgress((current) => current && { ...current, done: Math.min(current.total, current.done + entries.length), logs: [...current.logs, ...entries] });
+  const finishProgress = (summary: string, tone: Toast['tone']) =>
+    setProgress((current) => current && { ...current, done: current.total, finished: true, step: 'Concluído', summary, tone });
+  const nameOf = (id: string) => rows.find((row) => row.id === id)?.name ?? id;
+
+  /**
+   * `progressMode`: 'new' abre a janela de progresso, 'continue' segue uma já
+   * aberta (edição de anúncios, que antes cria os criativos) e 'none' não mostra
+   * (um único item, como o interruptor da linha).
+   */
+  async function applyChanges(
+    changes: BulkChange[],
+    label: string,
+    undoable = true,
+    failedBefore: Record<string, RowResult> = {},
+    progressMode: 'new' | 'continue' | 'none' = changes.length > 1 ? 'new' : 'none',
+  ) {
     const earlyFailures = Object.keys(failedBefore).length;
+    const track = progressMode !== 'none';
     if (changes.length === 0) {
       setResults(failedBefore);
       const firstEarly = Object.values(failedBefore)[0]?.message;
-      setToast(earlyFailures > 0
-        ? { text: `${label}: nenhum alterado. ${earlyFailures} com erro${firstEarly ? ` — ${firstEarly}` : ''}.`, tone: 'error', undo: null }
-        : { text: `${label}: nada mudou.`, tone: 'warn', undo: null });
+      const text = earlyFailures > 0
+        ? `${label}: nenhum alterado. ${earlyFailures} com erro${firstEarly ? ` — ${firstEarly}` : ''}.`
+        : `${label}: nada mudou.`;
+      setToast({ text, tone: earlyFailures > 0 ? 'error' : 'warn', undo: null });
+      if (track) finishProgress(text, earlyFailures > 0 ? 'error' : 'warn');
       setApplying(false);
       return;
     }
     setApplying(true);
+    if (progressMode === 'new') startProgress(label, changes.length, 'Preparando');
     const outcome: Record<string, RowResult> = { ...failedBefore };
-    for (let start = 0; start < changes.length; start += 50) {
-      const chunk = changes.slice(start, start + 50);
+    for (let start = 0; start < changes.length; start += BATCH_SIZE) {
+      const chunk = changes.slice(start, start + BATCH_SIZE);
+      if (track) stepProgress(`Enviando à Meta: ${start + 1}–${start + chunk.length} de ${changes.length}`);
       try {
         const response = await metaBatch(chunk.map((change) => buildBatchItem(change.id, change.params)), rateNotice);
         response.forEach((item, index) => {
@@ -427,6 +468,12 @@ export function MetaBulkEditor() {
           outcome[change.id] = { ok: false, message };
         });
       }
+      if (track) {
+        logProgress(chunk.map((change) => {
+          const result = outcome[change.id];
+          return { key: `apply-${change.id}`, name: nameOf(change.id), ok: Boolean(result?.ok), text: result?.ok ? `${label}: alterado` : result?.message || 'Erro sem detalhe da Meta' };
+        }));
+      }
     }
     const done = changes.filter((change) => outcome[change.id]?.ok);
     const byId = new Map(done.map((change) => [change.id, change.params]));
@@ -435,13 +482,12 @@ export function MetaBulkEditor() {
     const total = changes.length + earlyFailures;
     const failed = total - done.length;
     const firstError = Object.values(outcome).find((result) => result && !result.ok)?.message;
-    setToast({
-      text: failed === 0
-        ? `${label}: ${done.length} ${done.length === 1 ? 'item alterado' : 'itens alterados'}.`
-        : `${label}: ${done.length} de ${total} alterados. ${failed} com erro${firstError ? ` — ${firstError}` : ''}.`,
-      tone: failed === 0 ? 'ok' : done.length > 0 ? 'warn' : 'error',
-      undo: undoable && done.length > 0 ? undoChanges(done) : null,
-    });
+    const text = failed === 0
+      ? `${label}: ${done.length} ${done.length === 1 ? 'item alterado' : 'itens alterados'}.`
+      : `${label}: ${done.length} de ${total} alterados. ${failed} com erro${firstError ? ` — ${firstError}` : ''}.`;
+    const tone: Toast['tone'] = failed === 0 ? 'ok' : done.length > 0 ? 'warn' : 'error';
+    setToast({ text, tone, undo: undoable && done.length > 0 ? undoChanges(done) : null });
+    if (track) finishProgress(text, tone);
     setApplying(false);
     if (done.length > 0) setPanel(null);
   }
@@ -477,8 +523,12 @@ export function MetaBulkEditor() {
     const newCreativeByAd = new Map<string, string>();
     const failed: Record<string, RowResult> = {};
     const toCreate = creativePlans.filter((item): item is { row: Row; plan: Extract<CreativeEditPlan, { ok: true }> } => item.plan.ok);
-    for (let start = 0; start < toCreate.length; start += 50) {
-      const chunk = toCreate.slice(start, start + 50);
+    // Estimativa inicial: um criativo e uma troca por anúncio, mais os que só mudam o pixel.
+    const pixelOnly = selectedRows.filter((row) => pixelChanges.has(row.id) && !toCreate.some((item) => item.row.id === row.id)).length;
+    startProgress(label, toCreate.length * 2 + pixelOnly, toCreate.length > 0 ? 'Criando criativos novos' : 'Preparando');
+    for (let start = 0; start < toCreate.length; start += BATCH_SIZE) {
+      const chunk = toCreate.slice(start, start + BATCH_SIZE);
+      stepProgress(`Criando criativos novos: ${start + 1}–${start + chunk.length} de ${toCreate.length}`);
       try {
         const response = await metaBatch(chunk.map((item) => buildBatchItem(`${accountId}/adcreatives`, item.plan.params)), rateNotice);
         response.forEach((item, index) => {
@@ -502,6 +552,12 @@ export function MetaBulkEditor() {
           failed[row.id] = { ok: false, message };
         });
       }
+      logProgress(chunk.map(({ row }) => ({
+        key: `creative-${row.id}`,
+        name: row.name,
+        ok: !failed[row.id],
+        text: failed[row.id] ? failed[row.id].message || 'Criativo novo recusado' : 'Criativo novo criado',
+      })));
     }
     for (const row of selectedRows) if (row.creative?.id) creativeCache.current.set(row.creative.id, row.creative);
 
@@ -520,7 +576,8 @@ export function MetaBulkEditor() {
       }
       return Object.keys(params).length > 0 ? { params, previous } : null;
     });
-    await applyChanges(changes, label, true, failed);
+    stepProgress('Trocando nos anúncios', toCreate.length + changes.length);
+    await applyChanges(changes, label, true, failed, 'continue');
   }
 
   const resetCreativeForms = (kind: 'text' | 'url' | 'tracking') => {
@@ -662,10 +719,12 @@ export function MetaBulkEditor() {
   async function copyAds() {
     if (copyPairs.length === 0) return;
     setApplying(true);
+    startProgress('Copiar para conjuntos', copyPairs.length, 'Preparando');
     let created = 0;
     const errors: string[] = [];
-    for (let start = 0; start < copyPairs.length; start += 50) {
-      const chunk = copyPairs.slice(start, start + 50);
+    for (let start = 0; start < copyPairs.length; start += BATCH_SIZE) {
+      const chunk = copyPairs.slice(start, start + BATCH_SIZE);
+      stepProgress(`Criando cópias: ${start + 1}–${start + chunk.length} de ${copyPairs.length}`);
       const items: BatchItem[] = chunk.map(({ ad, target }) => {
         const pixelId = target.promoted_object?.pixel_id;
         return buildBatchItem(`${accountId}/ads`, {
@@ -678,23 +737,26 @@ export function MetaBulkEditor() {
       });
       try {
         const response = await metaBatch(items, rateNotice);
-        response.forEach((item) => {
+        logProgress(response.map((item, index) => {
           const result = batchOutcome(item);
           if (result.ok) created += 1;
           else if (result.message) errors.push(result.message);
-        });
+          const { ad, target } = chunk[index];
+          return { key: `copy-${ad.id}-${target.id}`, name: `${ad.name} → ${target.name}`, ok: result.ok, text: result.ok ? 'Cópia criada' : result.message || 'Erro sem detalhe da Meta' };
+        }));
       } catch (caught) {
-        errors.push(caught instanceof Error ? caught.message : 'Falha ao falar com a Meta.');
+        const message = caught instanceof Error ? caught.message : 'Falha ao falar com a Meta.';
+        errors.push(message);
+        logProgress(chunk.map(({ ad, target }) => ({ key: `copy-${ad.id}-${target.id}`, name: `${ad.name} → ${target.name}`, ok: false, text: message })));
       }
     }
     setApplying(false);
-    setToast({
-      text: errors.length === 0
-        ? `${created} anúncio(s) criado(s) nos conjuntos escolhidos, ${copyStatus === 'ACTIVE' ? 'ativos' : 'pausados'}, com o mesmo criativo (curtidas e comentários continuam).`
-        : `${created} de ${copyPairs.length} anúncio(s) criados. Erro: ${errors[0]}`,
-      tone: errors.length === 0 ? 'ok' : created > 0 ? 'warn' : 'error',
-      undo: null,
-    });
+    const text = errors.length === 0
+      ? `${created} anúncio(s) criado(s) nos conjuntos escolhidos, ${copyStatus === 'ACTIVE' ? 'ativos' : 'pausados'}, com o mesmo criativo (curtidas e comentários continuam).`
+      : `${created} de ${copyPairs.length} anúncio(s) criados. Erro: ${errors[0]}`;
+    const tone: Toast['tone'] = errors.length === 0 ? 'ok' : created > 0 ? 'warn' : 'error';
+    setToast({ text, tone, undo: null });
+    finishProgress(text, tone);
     if (created > 0) {
       setPanel(null);
       setTargetIds(new Set());
@@ -1330,7 +1392,104 @@ export function MetaBulkEditor() {
           Mostrar mais {Math.min(PAGE_SIZE, filtered.length - shown.length)} de {filtered.length - shown.length}
         </button>
       )}
+      {progress && <ProgressDialog progress={progress} onClose={() => setProgress(null)} />}
     </section>
+  );
+}
+
+const PROGRESS_TONE: Record<Toast['tone'], string> = {
+  ok: 'border-emerald-400/30 bg-emerald-500/10 text-emerald-100',
+  warn: 'border-amber-400/30 bg-amber-500/10 text-amber-100',
+  error: 'border-red-400/30 bg-red-500/10 text-red-100',
+};
+
+/** Janela com a porcentagem e o registro de cada item enquanto o lote vai para a Meta. */
+function ProgressDialog({ progress, onClose }: { progress: Progress; onClose: () => void }) {
+  const [onlyErrors, setOnlyErrors] = useState(false);
+  const listRef = useRef<HTMLOListElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const percent = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : progress.finished ? 100 : 0;
+  const errors = progress.logs.filter((log) => !log.ok).length;
+  const oks = progress.logs.length - errors;
+  const visible = onlyErrors ? progress.logs.filter((log) => !log.ok) : progress.logs;
+
+  // Acompanha o fim da lista enquanto chegam registros novos.
+  useEffect(() => {
+    if (!onlyErrors && listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+  }, [progress.logs.length, onlyErrors]);
+
+  useEffect(() => {
+    if (progress.finished) closeRef.current?.focus();
+  }, [progress.finished]);
+
+  useEffect(() => {
+    if (!progress.finished) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [progress.finished, onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+      <div role="dialog" aria-modal="true" aria-labelledby="bulk-progress-title" className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] p-5 shadow-2xl">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h3 id="bulk-progress-title" className="text-base font-semibold text-[var(--color-text)]">{progress.title}</h3>
+            <p aria-live="polite" className="mt-0.5 flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]">
+              {!progress.finished && <Loader2 size={12} className="animate-spin" aria-hidden="true" />}
+              {progress.step}
+            </p>
+          </div>
+          <span className="shrink-0 text-2xl font-semibold tabular-nums text-[var(--color-text)]">{percent}%</span>
+        </div>
+
+        <div role="progressbar" aria-label="Progresso" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} className="mt-3 h-2 overflow-hidden rounded-full bg-[var(--color-bg)]">
+          <div
+            className={clsx('h-full rounded-full transition-[width] duration-300', progress.finished && progress.tone === 'error' ? 'bg-red-400' : progress.finished && progress.tone === 'warn' ? 'bg-amber-400' : 'bg-[var(--color-brand)]')}
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-3 text-xs">
+          <span className="text-[var(--color-text-muted)]">{progress.done} de {progress.total}</span>
+          <span className="inline-flex items-center gap-1 text-emerald-300"><CheckCircle2 size={12} aria-hidden="true" /> {oks} ok</span>
+          <span className={clsx('inline-flex items-center gap-1', errors > 0 ? 'text-red-300' : 'text-[var(--color-text-faint)]')}><AlertTriangle size={12} aria-hidden="true" /> {errors} com erro</span>
+          <label className="ml-auto inline-flex items-center gap-1.5 text-[var(--color-text-muted)]">
+            <input type="checkbox" checked={onlyErrors} onChange={(event) => setOnlyErrors(event.target.checked)} disabled={errors === 0} /> Só erros
+          </label>
+        </div>
+
+        <ol ref={listRef} aria-label="Registro da edição" className="mt-2 min-h-[160px] flex-1 overflow-y-auto rounded-xl border border-[var(--color-border-soft)] bg-[var(--color-bg)] p-2 font-mono text-[11px] leading-5">
+          {visible.length === 0 && <li className="px-1 text-[var(--color-text-faint)]">{progress.finished ? 'Nada para mostrar.' : 'Aguardando a primeira resposta da Meta...'}</li>}
+          {visible.map((log, index) => (
+            <li key={`${log.key}-${index}`} className="flex gap-2 px-1">
+              {log.ok
+                ? <CheckCircle2 size={12} className="mt-1 shrink-0 text-emerald-300" aria-label="ok" />
+                : <AlertTriangle size={12} className="mt-1 shrink-0 text-red-300" aria-label="erro" />}
+              <span className="min-w-0 break-words">
+                <span className="text-[var(--color-text)]">{log.name}</span>
+                <span className={log.ok ? 'text-[var(--color-text-muted)]' : 'text-red-300'}> — {log.text}</span>
+              </span>
+            </li>
+          ))}
+        </ol>
+
+        {progress.finished && progress.summary && progress.tone && (
+          <p role="status" className={clsx('mt-3 rounded-xl border px-3 py-2 text-xs', PROGRESS_TONE[progress.tone])}>{progress.summary}</p>
+        )}
+
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <p className="text-[11px] text-[var(--color-text-faint)]">
+            {progress.finished ? 'O botão Desfazer continua disponível no aviso da página.' : 'Não feche nem recarregue a página até terminar.'}
+          </p>
+          <button ref={closeRef} type="button" onClick={onClose} disabled={!progress.finished} className={ghostButton}>
+            {progress.finished ? 'Fechar' : 'Aplicando...'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
