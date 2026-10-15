@@ -271,7 +271,7 @@ export function MetaBulkEditor() {
     setPanel(null);
     setVisibleCount(PAGE_SIZE);
 
-    metaGetAll<Row>(`${accountId}/${LEVEL_EDGE[level]}`, { fields: FIELDS[level], filtering: statusFiltering(level, statusFilter), limit: 200 }, { maxPages: 10, ...rateNotice })
+    metaGetAll<Row>(`${accountId}/${LEVEL_EDGE[level]}`, { fields: FIELDS[level], filtering: statusFiltering(level, statusFilter), limit: level === 'ad' ? 50 : 200 }, { maxPages: level === 'ad' ? 40 : 10, ...rateNotice })
       .then((list) => {
         if (alive) {
           setRows(list.map((row) => ({ ...row, name: row.name || row.id })));

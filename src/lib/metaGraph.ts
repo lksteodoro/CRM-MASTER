@@ -44,6 +44,10 @@ export class MetaProxyOutdatedError extends Error {
 
 type GraphError = { message?: string; code?: number; error_subcode?: number; error_user_msg?: string };
 
+function isTooMuchData(error: GraphError) {
+  return error.code === 1 && /reduce the amount of data/i.test(error.message ?? '');
+}
+
 function throwGraphError(error: GraphError, prefix?: string): never {
   const label = `[${error.code ?? '?'}${error.error_subcode ? `/${error.error_subcode}` : ''}]`;
   const text = error.error_user_msg || error.message || 'Falha na Meta.';
@@ -144,12 +148,19 @@ export async function metaGetAll<T = any>(
 ): Promise<T[]> {
   const rows: T[] = [];
   let after: string | null = null;
+  let limit = Number(params.limit) || 0;
 
   for (let page = 0; page < maxPages; page++) {
     const payload: { data?: T[]; error?: GraphError | null; after?: string | null } = await invoke(
-      { op: 'get_page', path, params, after },
+      { op: 'get_page', path, params: limit ? { ...params, limit } : params, after },
       options,
     );
+    // Código 1 "reduce the amount of data": a página ficou pesada demais. Repete a mesma página com metade do limite.
+    if (payload.error && isTooMuchData(payload.error) && limit > 10) {
+      limit = Math.max(10, Math.floor(limit / 2));
+      page--;
+      continue;
+    }
     if (payload.error) throwGraphError(payload.error);
     rows.push(...(payload.data ?? []));
     after = payload.after ?? null;
