@@ -63,6 +63,22 @@ test('anúncio de imagem: novo texto, título e URL viram um criativo novo', () 
   assert.equal(imageAd.object_story_spec.link_data.name, 'Título antigo');
 });
 
+test('aprimoramentos padrão (descontinuado) não vão para o criativo novo', () => {
+  const legacy = {
+    ...imageAd,
+    degrees_of_freedom_spec: { creative_features_spec: { standard_enhancements: { enroll_status: 'OPT_IN' }, image_uncrop: { enroll_status: 'OPT_OUT' } } },
+  };
+  const plan = planCreativeEdit(legacy, { url: { mode: 'set', value: 'https://site.com/novo' } });
+  assert.equal(plan.ok, true);
+  if (!plan.ok) return;
+  assert.deepEqual(JSON.parse(plan.params.degrees_of_freedom_spec), { creative_features_spec: { image_uncrop: { enroll_status: 'OPT_OUT' } } });
+
+  const onlyLegacy = { ...imageAd, degrees_of_freedom_spec: { creative_features_spec: { standard_enhancements: { enroll_status: 'OPT_IN' } } } };
+  const plan2 = planCreativeEdit(onlyLegacy, { url: { mode: 'set', value: 'https://site.com/novo' } });
+  assert.equal(plan2.ok, true);
+  if (plan2.ok) assert.equal(plan2.params.degrees_of_freedom_spec, undefined);
+});
+
 test('rastreamento: parâmetros de URL no criativo e utm_ fora do link', () => {
   const plan = planCreativeEdit(imageAd, { urlTags: { mode: 'set', value: '?utm_source=facebook&utm_content={{ad.name}}' }, stripUtmFromUrl: true });
   assert.equal(plan.ok, true);

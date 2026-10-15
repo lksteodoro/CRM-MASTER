@@ -383,9 +383,22 @@ export function planCreativeEdit(creative: AnyRecord | null | undefined, edit: C
   if (feed) params.asset_feed_spec = JSON.stringify(feed);
   if (urlTags) params.url_tags = urlTags;
   // Mantém os ajustes de enquadramento (ex.: "original, sem corte") do criativo anterior.
-  const features = creative.degrees_of_freedom_spec?.creative_features_spec;
-  if (features && typeof features === 'object') params.degrees_of_freedom_spec = JSON.stringify({ creative_features_spec: features });
+  const features = keptCreativeFeatures(creative.degrees_of_freedom_spec?.creative_features_spec);
+  if (features) params.degrees_of_freedom_spec = JSON.stringify({ creative_features_spec: features });
   return { ok: true, params, before, after: describeCreative(edited), creative: edited };
+}
+
+/** Recursos que a Meta não aceita mais em criativo novo; o criativo antigo ainda os devolve na leitura. */
+const DEPRECATED_CREATIVE_FEATURES = new Set(['standard_enhancements']);
+
+/**
+ * Ajustes individuais do criativo anterior que podem ir para o novo.
+ * `standard_enhancements` (aprimoramentos padrão) foi descontinuado e faz a Meta recusar o criativo.
+ */
+export function keptCreativeFeatures(features: unknown): AnyRecord | null {
+  if (!features || typeof features !== 'object') return null;
+  const kept = Object.fromEntries(Object.entries(features as AnyRecord).filter(([key]) => !DEPRECATED_CREATIVE_FEATURES.has(key)));
+  return Object.keys(kept).length > 0 ? kept : null;
 }
 
 /** tracking_specs que liga o anúncio ao pixel (eventos do site). */
