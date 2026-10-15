@@ -63,6 +63,24 @@ test('anúncio de imagem: novo texto, título e URL viram um criativo novo', () 
   assert.equal(imageAd.object_story_spec.link_data.name, 'Título antigo');
 });
 
+test('troca página e Instagram mantendo o resto do criativo', () => {
+  const plan = planCreativeEdit(imageAd, { identity: { pageId: '99', instagramUserId: '77' } });
+  assert.equal(plan.ok, true);
+  if (!plan.ok) return;
+  const story = JSON.parse(plan.params.object_story_spec);
+  assert.equal(story.page_id, '99');
+  assert.equal(story.instagram_user_id, '77');
+  assert.equal(story.link_data.link, imageAd.object_story_spec.link_data.link);
+  assert.equal(plan.before.pageId, '10');
+  assert.equal(plan.after.pageId, '99');
+
+  const keepIg = planCreativeEdit(imageAd, { identity: { pageId: '99' } });
+  assert.equal(keepIg.ok && JSON.parse(keepIg.params.object_story_spec).instagram_user_id, '20');
+
+  const leadAd = { ...imageAd, object_story_spec: { ...imageAd.object_story_spec, link_data: { ...imageAd.object_story_spec.link_data, call_to_action: { type: 'SIGN_UP', value: { lead_gen_form_id: '5' } } } } };
+  assert.equal(planCreativeEdit(leadAd, { identity: { pageId: '99' } }).ok, false);
+});
+
 test('aprimoramentos padrão (descontinuado) não vão para o criativo novo', () => {
   const legacy = {
     ...imageAd,

@@ -175,6 +175,8 @@ export type CreativeEdit = {
   urlTags?: UrlTagsEdit;
   /** Tira os parâmetros utm_ de dentro da URL (evita duplicar com os parâmetros de URL). */
   stripUtmFromUrl?: boolean;
+  /** Página do Facebook e perfil do Instagram que assinam o anúncio. Sem `instagramUserId`, o perfil atual fica. */
+  identity?: { pageId: string; instagramUserId?: string };
 };
 
 const isChanging = (edit?: TextEdit) => Boolean(edit && edit.mode !== 'keep');
@@ -214,6 +216,10 @@ export type CreativeInfo = {
   urlTags: string;
   /** Motivo de a URL não poder ser trocada (mensagem, formulário, publicação existente). */
   urlLockedReason: string | null;
+  pageId: string;
+  instagramUserId: string;
+  /** Formulário de lead pertence à página: trocar a página quebraria o anúncio. */
+  hasLeadForm: boolean;
 };
 
 const firstText = (items: unknown) =>
@@ -237,9 +243,10 @@ export function describeCreative(creative?: AnyRecord | null): CreativeInfo {
   ].filter(isSiteUrl);
 
   const kind: CreativeInfo['kind'] = feed ? 'feed' : video ? 'video' : link ? 'link' : 'post';
+  const hasLeadForm = [...ctas, ...feedCtaObjects].some((cta) => cta?.value?.lead_gen_form_id);
   let urlLockedReason: string | null = null;
   if (kind === 'post') urlLockedReason = 'usa uma publicação existente';
-  else if ([...ctas, ...feedCtaObjects].some((cta) => cta?.value?.lead_gen_form_id)) urlLockedReason = 'é de formulário de lead';
+  else if (hasLeadForm) urlLockedReason = 'é de formulário de lead';
   else if (ctas.some((cta) => MESSAGE_CTAS.includes(cta?.type)) || feedCtas.some((type) => MESSAGE_CTAS.includes(type))) urlLockedReason = 'é de mensagem (WhatsApp/Messenger)';
   else if (urls.length === 0) urlLockedReason = 'não tem URL de site';
 
@@ -251,6 +258,9 @@ export function describeCreative(creative?: AnyRecord | null): CreativeInfo {
     url: urls[0] ?? '',
     urlTags: String(creative?.url_tags ?? ''),
     urlLockedReason,
+    pageId: String(story?.page_id ?? ''),
+    instagramUserId: String(story?.instagram_user_id ?? story?.instagram_actor_id ?? ''),
+    hasLeadForm,
   };
 }
 
@@ -313,9 +323,14 @@ export function planCreativeEdit(creative: AnyRecord | null | undefined, edit: C
   if (before.kind === 'post') return { ok: false, reason: 'usa uma publicação existente — edite a publicação na página' };
   const touchesUrl = isChanging(edit.url) || Boolean(edit.stripUtmFromUrl);
   if (touchesUrl && before.urlLockedReason) return { ok: false, reason: `a URL não muda: o anúncio ${before.urlLockedReason}` };
+  if (edit.identity && before.hasLeadForm) return { ok: false, reason: 'o formulário de lead pertence à página atual; troque a página criando o anúncio de novo' };
 
   const baseline = sanitizeStorySpec(creative.object_story_spec);
   const story: AnyRecord = sanitizeStorySpec(creative.object_story_spec);
+  if (edit.identity?.pageId) {
+    story.page_id = edit.identity.pageId;
+    if (edit.identity.instagramUserId) story.instagram_user_id = edit.identity.instagramUserId;
+  }
   const feed: AnyRecord | null = creative.asset_feed_spec ? JSON.parse(JSON.stringify(creative.asset_feed_spec)) : null;
   const editUrl = (value: unknown) => {
     if (!isSiteUrl(value)) return value;

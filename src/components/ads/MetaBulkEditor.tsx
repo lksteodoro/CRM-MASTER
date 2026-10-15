@@ -9,6 +9,7 @@ import {
   Copy,
   ExternalLink,
   Eye,
+  Flag,
   Layers,
   Link2,
   Loader2,
@@ -97,7 +98,9 @@ type TargetAdSet = {
 
 type Metrics = { spend: number; leads: number };
 type RowResult = { ok: boolean; message?: string };
-type Panel = null | 'activate' | 'pause' | 'budget' | 'rename' | 'copy' | 'text' | 'url' | 'tracking';
+type Panel = null | 'activate' | 'pause' | 'budget' | 'rename' | 'copy' | AdPanel;
+type AdPanel = 'text' | 'url' | 'tracking' | 'identity';
+type PageOption = { id: string; name?: string; instagram_business_account?: { id: string; username?: string } | null };
 type SortKey = 'name' | 'budget' | 'spend' | 'leads' | 'cpl';
 type Toast = { text: string; tone: 'ok' | 'warn' | 'error'; undo: BulkChange[] | null };
 type ProgressLog = { key: string; name: string; ok: boolean; text: string };
@@ -220,7 +223,7 @@ export function MetaBulkEditor() {
   const activeScope = scopeFor(parentScope, level);
   // Chave estável para recarregar só quando o escopo efetivo muda.
   const scopeKey = activeScope ? `${activeScope.level}:${activeScope.ids.join(',')}` : '';
-  const [pendingPanel, setPendingPanel] = useState<'text' | 'url' | 'tracking' | null>(null);
+  const [pendingPanel, setPendingPanel] = useState<AdPanel | null>(null);
   const [rowsLevel, setRowsLevel] = useState<BulkLevel | null>(null);
 
   const [rows, setRows] = useState<Row[]>([]);
@@ -258,6 +261,10 @@ export function MetaBulkEditor() {
   const [urlTagsEdit, setUrlTagsEdit] = useState<UrlTagsEdit>({ mode: 'keep' });
   const [pixels, setPixels] = useState<Pixel[]>([]);
   const [pixelChoice, setPixelChoice] = useState('');
+  const [pages, setPages] = useState<PageOption[] | null>(null);
+  const [pagesError, setPagesError] = useState<string | null>(null);
+  const [identityPageId, setIdentityPageId] = useState('');
+  const [identityIgId, setIdentityIgId] = useState('');
   // Criativos conhecidos (atuais e recém-criados), para a tela e para desfazer.
   const creativeCache = useRef(new Map<string, Creative>());
 
@@ -500,13 +507,32 @@ export function MetaBulkEditor() {
     if (panel === 'text') return { primaryText: textEdits.primaryText, title: textEdits.title, description: textEdits.description };
     if (panel === 'url') return { url: urlEdit, stripUtmFromUrl: stripUtm };
     if (panel === 'tracking') return { urlTags: urlTagsEdit, stripUtmFromUrl: urlTagsEdit.mode === 'set' && stripUtm };
+    if (panel === 'identity') return identityPageId ? { identity: { pageId: identityPageId, instagramUserId: identityIgId || undefined } } : {};
     return {};
-  }, [panel, textEdits, urlEdit, stripUtm, urlTagsEdit]);
+  }, [panel, textEdits, urlEdit, stripUtm, urlTagsEdit, identityPageId, identityIgId]);
 
   const creativePlans = useMemo(() => {
-    if (panel !== 'text' && panel !== 'url' && panel !== 'tracking') return [];
+    if (panel !== 'text' && panel !== 'url' && panel !== 'tracking' && panel !== 'identity') return [];
+    if (panel === 'identity' && !identityPageId) return [];
     return selectedRows.map((row) => ({ row, plan: planCreativeEdit(row.creative, creativeEdit, row.name) as CreativeEditPlan }));
-  }, [panel, selectedRows, creativeEdit]);
+  }, [panel, selectedRows, creativeEdit, identityPageId]);
+
+  // Páginas que a conexão da agência administra, com o Instagram vinculado a cada uma.
+  useEffect(() => {
+    if (panel !== 'identity' || pages) return;
+    let alive = true;
+    setPagesError(null);
+    metaGetAll<PageOption>('me/accounts', { fields: 'id,name,instagram_business_account{id,username}', limit: 200 }, rateNotice)
+      .then((list) => {
+        if (alive) setPages([...list].sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id, 'pt-BR')));
+      })
+      .catch((caught) => {
+        if (alive) setPagesError(caught instanceof Error ? caught.message : 'Não foi possível listar as páginas.');
+      });
+    return () => {
+      alive = false;
+    };
+  }, [panel, pages, rateNotice]);
 
   const pixelChanges = useMemo(() => {
     if (panel !== 'tracking' || !pixelChoice) return new Map<string, string>();
@@ -580,11 +606,13 @@ export function MetaBulkEditor() {
     await applyChanges(changes, label, true, failed, 'continue');
   }
 
-  const resetCreativeForms = (kind: 'text' | 'url' | 'tracking') => {
+  const resetCreativeForms = (kind: AdPanel) => {
     setTextEdits({ primaryText: { mode: 'keep' }, title: { mode: 'keep' }, description: { mode: 'keep' } });
     setUrlEdit({ mode: 'set', value: '' });
     setUrlTagsEdit({ mode: 'keep' });
     setPixelChoice('');
+    setIdentityPageId('');
+    setIdentityIgId('');
     // Na troca de URL os utm_ digitados ficam; ao definir parâmetros, os de dentro da URL saem.
     setStripUtm(kind === 'tracking');
   };
@@ -593,7 +621,7 @@ export function MetaBulkEditor() {
     ? undefined
     : `Abre os anúncios ${level === 'campaign' ? 'das campanhas' : 'dos conjuntos'} marcados para editar`;
 
-  function openAdPanel(kind: 'text' | 'url' | 'tracking') {
+  function openAdPanel(kind: AdPanel) {
     if (level === 'ad') {
       resetCreativeForms(kind);
       setPanel(kind);
@@ -872,6 +900,7 @@ export function MetaBulkEditor() {
         <button type="button" disabled={selectedCount === 0 || applying} onClick={() => openAdPanel('text')} title={adPanelHint} className={ghostButton}><TextCursorInput size={13} /> Texto</button>
         <button type="button" disabled={selectedCount === 0 || applying} onClick={() => openAdPanel('url')} title={adPanelHint} className={ghostButton}><Link2 size={13} /> URL</button>
         <button type="button" disabled={selectedCount === 0 || applying} onClick={() => openAdPanel('tracking')} title={adPanelHint} className={ghostButton}><Radar size={13} /> Rastreamento</button>
+        <button type="button" disabled={selectedCount === 0 || applying} onClick={() => openAdPanel('identity')} title={adPanelHint} className={ghostButton}><Flag size={13} /> Página e Instagram</button>
         {level === 'ad' && <button type="button" disabled={selectedCount === 0 || applying} onClick={() => setPanel('copy')} className={ghostButton}><Copy size={13} /> Copiar para conjuntos</button>}
         {selectedCount > 0 && (
           <button type="button" onClick={() => { setSelected(new Set()); setPanel(null); }} className="ml-auto inline-flex min-h-9 items-center gap-1 rounded-lg px-2 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)]">
@@ -1002,14 +1031,21 @@ export function MetaBulkEditor() {
             </div>
           )}
 
-          {(panel === 'text' || panel === 'url' || panel === 'tracking') && (() => {
+          {(panel === 'text' || panel === 'url' || panel === 'tracking' || panel === 'identity') && (() => {
             const ready = creativePlans.filter((item) => item.plan.ok);
             const skipped = creativePlans.filter((item) => !item.plan.ok);
             const affected = new Set([...ready.map((item) => item.row.id), ...pixelChanges.keys()]);
             const urlProblem = panel === 'url' && urlEdit.mode === 'set' ? (urlEdit.value.trim() ? validateDestinationUrl(urlEdit.value.trim()) : 'Informe a URL nova.') : null;
             const tagsProblem = panel === 'tracking' && urlTagsEdit.mode === 'set' && !urlTagsEdit.value.trim() ? 'Informe os parâmetros ou escolha "Remover".' : null;
-            const problem = urlProblem || tagsProblem;
-            const title = panel === 'text' ? 'Texto' : panel === 'url' ? 'URL de destino' : 'Rastreamento';
+            const identityProblem = panel === 'identity' && !identityPageId ? 'Escolha a página.' : null;
+            const problem = urlProblem || tagsProblem || identityProblem;
+            const title = panel === 'text' ? 'Texto' : panel === 'url' ? 'URL de destino' : panel === 'identity' ? 'Página e Instagram' : 'Rastreamento';
+            const pageName = (id: string) => pages?.find((page) => page.id === id)?.name || id || '(nenhuma)';
+            const igName = (id: string) => {
+              const owner = pages?.find((page) => page.instagram_business_account?.id === id);
+              return owner?.instagram_business_account?.username ? `@${owner.instagram_business_account.username}` : id || '(da página)';
+            };
+            const chosenPage = pages?.find((page) => page.id === identityPageId);
             const modeSelect = (value: string, onChange: (mode: string) => void, label: string, options: Array<[string, string]>) => (
               <select aria-label={label} value={value} onChange={(event) => onChange(event.target.value)} className={clsx(inputClass, 'py-1.5')}>
                 {options.map(([key, text]) => <option key={key} value={key}>{text}</option>)}
@@ -1021,6 +1057,9 @@ export function MetaBulkEditor() {
                 if (plan.before.primaryText !== plan.after.primaryText) pairs.push(['Texto', plan.before.primaryText, plan.after.primaryText]);
                 if (plan.before.title !== plan.after.title) pairs.push(['Título', plan.before.title, plan.after.title]);
                 if (plan.before.description !== plan.after.description) pairs.push(['Descrição', plan.before.description, plan.after.description]);
+              } else if (panel === 'identity') {
+                if (plan.before.pageId !== plan.after.pageId) pairs.push(['Página', pageName(plan.before.pageId), pageName(plan.after.pageId)]);
+                if (plan.before.instagramUserId !== plan.after.instagramUserId) pairs.push(['Instagram', igName(plan.before.instagramUserId), igName(plan.after.instagramUserId)]);
               } else {
                 if (plan.before.url !== plan.after.url) pairs.push(['URL', plan.before.url, plan.after.url]);
                 if (plan.before.urlTags !== plan.after.urlTags) pairs.push(['Parâmetros', plan.before.urlTags || '(nenhum)', plan.after.urlTags || '(nenhum)']);
@@ -1074,6 +1113,46 @@ export function MetaBulkEditor() {
                     </label>
                     {urlProblem && urlEdit.mode === 'set' && urlEdit.value.trim() && <p role="alert" className="text-xs text-red-300">{urlProblem}</p>}
                     <p className="text-[11px] leading-5 text-[var(--color-text-faint)]">Anúncios de WhatsApp, Messenger e formulário não têm URL de site e ficam de fora.</p>
+                  </div>
+                )}
+
+                {panel === 'identity' && (
+                  <div className="space-y-2">
+                    {!pages && !pagesError && <p className="flex items-center gap-2 text-xs text-[var(--color-text-muted)]"><Loader2 size={13} className="animate-spin" /> Carregando páginas...</p>}
+                    {pagesError && <p role="alert" className="text-xs text-red-300">{pagesError}</p>}
+                    {pages && (
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <label className="flex flex-col gap-1 text-xs font-semibold text-[var(--color-text)]">
+                          Página do Facebook
+                          <select
+                            value={identityPageId}
+                            onChange={(event) => {
+                              const next = pages.find((page) => page.id === event.target.value);
+                              setIdentityPageId(event.target.value);
+                              // Sugere o Instagram vinculado à página escolhida.
+                              setIdentityIgId(next?.instagram_business_account?.id ?? '');
+                            }}
+                            className={clsx(inputClass, 'py-1.5 font-normal')}
+                          >
+                            <option value="">Escolha a página</option>
+                            {pages.map((page) => <option key={page.id} value={page.id}>{page.name || page.id}</option>)}
+                          </select>
+                        </label>
+                        <label className="flex flex-col gap-1 text-xs font-semibold text-[var(--color-text)]">
+                          Perfil do Instagram
+                          <select value={identityIgId} onChange={(event) => setIdentityIgId(event.target.value)} disabled={!identityPageId} className={clsx(inputClass, 'py-1.5 font-normal')}>
+                            <option value="">Manter o perfil atual do anúncio</option>
+                            {pages.filter((page) => page.instagram_business_account).map((page) => (
+                              <option key={page.instagram_business_account!.id} value={page.instagram_business_account!.id}>
+                                @{page.instagram_business_account!.username || page.instagram_business_account!.id}{page.id === identityPageId ? ' (vinculado à página)' : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                    )}
+                    {chosenPage && !chosenPage.instagram_business_account && <p className="text-[11px] text-amber-200">Essa página não tem Instagram vinculado. Escolha um perfil ou mantenha o atual.</p>}
+                    <p className="text-[11px] leading-5 text-[var(--color-text-faint)]">Só aparecem páginas que a conexão da agência administra. Anúncios de formulário de lead ficam de fora, porque o formulário pertence à página atual. Em anúncios de WhatsApp, o número precisa estar ligado à página nova.</p>
                   </div>
                 )}
 
