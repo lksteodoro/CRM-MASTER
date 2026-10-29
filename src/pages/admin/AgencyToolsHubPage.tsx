@@ -9,6 +9,7 @@ import {
   FlaskConical,
   LayoutDashboard,
   Link2,
+  ListChecks,
   Megaphone,
   MessagesSquare,
   Printer,
@@ -41,6 +42,7 @@ const toolMeta: Record<AgencyToolKey, { icon: ComponentType<{ size?: number }>; 
   utm_tester: { icon: FlaskConical, tone: 'warn', description: 'Gera o link de teste e o link com UTMs para o anúncio.' },
   'disparo.dashboard': { icon: LayoutDashboard, tone: 'brand', description: 'Visão geral dos disparos e dos resultados.' },
   'disparo.redirects': { icon: Link2, tone: 'info', description: 'Links por cliente, randomizador e analytics de cliques.' },
+  'disparo.quizzes': { icon: ListChecks, tone: 'violet', description: 'Quiz estilo Typebot que qualifica o lead e manda para o redirecionador.' },
   'disparo.templates': { icon: FileCode2, tone: 'good', description: 'Modelos de mensagem aprovados na Infobip.' },
   'disparo.broadcasts': { icon: Radio, tone: 'warn', description: 'Monte e acompanhe as transmissões.' },
   'disparo.request': { icon: Send, tone: 'brand', description: 'Peça um novo disparo para a operação.' },
@@ -52,7 +54,7 @@ const toolMeta: Record<AgencyToolKey, { icon: ComponentType<{ size?: number }>; 
 const disparoBlocks: { label: string; keys: AgencyToolKey[] }[] = [
   { label: 'Visão geral', keys: ['disparo.dashboard'] },
   { label: 'Pedidos', keys: ['disparo.request', 'disparo.demands'] },
-  { label: 'Envio', keys: ['disparo.broadcasts', 'disparo.templates', 'disparo.redirects'] },
+  { label: 'Envio', keys: ['disparo.broadcasts', 'disparo.templates', 'disparo.redirects', 'disparo.quizzes'] },
   { label: 'Listas e relatórios', keys: ['disparo.sanitizer', 'disparo.report'] },
 ];
 

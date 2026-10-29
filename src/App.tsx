@@ -8,6 +8,7 @@ import { ResetPasswordPage } from './pages/auth/ResetPasswordPage';
 import { ProjectsPage } from './pages/ProjectsPage';
 import { TelaoPage } from './pages/public/TelaoPage';
 import { RedirectPage } from './pages/public/RedirectPage';
+import { QuizPage } from './pages/public/QuizPage';
 
 import { ProjectLayout } from './components/layout/ProjectLayout';
 import { AdminShell } from './components/layout/AdminShell';
@@ -29,6 +30,7 @@ import { DisparoKanbanPage } from './pages/admin/DisparoKanbanPage';
 import { DisparoDashboardPage } from './pages/admin/DisparoDashboardPage';
 import { ListSanitizerPage } from './pages/admin/ListSanitizerPage';
 import { RedirectLinksPage } from './pages/admin/RedirectLinksPage';
+import { QuizzesPage } from './pages/admin/QuizzesPage';
 import { InfobipTemplatesPage } from './pages/admin/InfobipTemplatesPage';
 import { InfobipBroadcastsPage } from './pages/admin/InfobipBroadcastsPage';
 import { ClientsListPage } from './pages/admin/ClientsListPage';
@@ -56,6 +58,7 @@ function App() {
           <Route path="/redefinir-senha" element={<ResetPasswordPage />} />
           <Route path="/telao/:token" element={<TelaoPage />} />
           <Route path="/r/:slug" element={<RedirectPage />} />
+          <Route path="/q/:slug" element={<QuizPage />} />
 
           {/* Autenticadas */}
           <Route element={<ProtectedRoute />}>
@@ -73,6 +76,7 @@ function App() {
               </Route>
             </Route>
             <Route element={<AgencyToolRoute tool="disparo.redirects" />}><Route element={<AdminShell />}><Route path="/agency/disparo/redirecionador" element={<RedirectLinksPage />} /></Route></Route>
+            <Route element={<AgencyToolRoute tool="disparo.quizzes" />}><Route element={<AdminShell />}><Route path="/agency/disparo/quiz" element={<QuizzesPage />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="disparo.templates" />}><Route element={<AdminShell />}><Route path="/agency/disparo/templates" element={<InfobipTemplatesPage />} /><Route path="/agency/disparo/template" element={<Navigate to="/agency/disparo/templates" replace />} /><Route path="/agency/disparo/tempelte" element={<Navigate to="/agency/disparo/templates" replace />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="disparo.broadcasts" />}><Route element={<AdminShell />}><Route path="/agency/disparo/transmissoes" element={<InfobipBroadcastsPage />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="disparo.request" />}><Route element={<AdminShell />}><Route path="/agency/disparo/solicitar" element={<ClientDisparoPortalPage />} /></Route></Route>

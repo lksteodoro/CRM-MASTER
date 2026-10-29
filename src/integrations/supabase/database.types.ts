@@ -1569,6 +1569,96 @@ export type Database = {
         };
         Relationships: [];
       };
+      quizzes: {
+        Row: {
+          id: string;
+          organization_id: string;
+          name: string;
+          slug: string;
+          title: string;
+          description: string | null;
+          questions: Json;
+          qualified_link_id: string | null;
+          disqualified_link_id: string | null;
+          active: boolean;
+          response_count: number;
+          qualified_count: number;
+          created_by: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          organization_id?: string;
+          name: string;
+          slug: string;
+          title: string;
+          description?: string | null;
+          questions?: Json;
+          qualified_link_id?: string | null;
+          disqualified_link_id?: string | null;
+          active?: boolean;
+          response_count?: number;
+          qualified_count?: number;
+          created_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          name?: string;
+          slug?: string;
+          title?: string;
+          description?: string | null;
+          questions?: Json;
+          qualified_link_id?: string | null;
+          disqualified_link_id?: string | null;
+          active?: boolean;
+          response_count?: number;
+          qualified_count?: number;
+          created_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      quiz_responses: {
+        Row: {
+          id: string;
+          quiz_id: string;
+          organization_id: string;
+          answers: Json;
+          qualified: boolean;
+          contact_name: string | null;
+          contact_phone: string | null;
+          contact_email: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          quiz_id: string;
+          organization_id: string;
+          answers: Json;
+          qualified: boolean;
+          contact_name?: string | null;
+          contact_phone?: string | null;
+          contact_email?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          quiz_id?: string;
+          organization_id?: string;
+          answers?: Json;
+          qualified?: boolean;
+          contact_name?: string | null;
+          contact_phone?: string | null;
+          contact_email?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
       infobip_senders: {
         Row: { id: string; organization_id: string; client_id: string | null; label: string; sender: string; waba_id: string | null; waba_label: string | null; active: boolean; created_at: string; updated_at: string };
         Insert: { id?: string; organization_id?: string; client_id?: string | null; label: string; sender: string; waba_id?: string | null; waba_label?: string | null; active?: boolean; created_at?: string; updated_at?: string };
@@ -1649,6 +1739,14 @@ export type Database = {
         Args: { p_slug: string };
         Returns: Array<{ target_url: string; delay_seconds: number; link_name: string }>;
       };
+      get_public_quiz: {
+        Args: { p_slug: string };
+        Returns: Array<{ title: string; description: string | null; questions: Json }>;
+      };
+      submit_quiz_response: {
+        Args: { p_slug: string; p_answers: Json };
+        Returns: Array<{ qualified: boolean; redirect_slug: string | null }>;
+      };
       save_redirect_destinations: {
         Args: { p_link_id: string; p_destinations: Json };
         Returns: Array<Database['public']['Tables']['redirect_destinations']['Row']>;
@@ -1688,6 +1786,8 @@ export type AuditLogRow = Tables['audit_logs']['Row'];
 export type MetaIntegrationRow = Tables['meta_integrations']['Row'];
 export type RedirectLinkRow = Tables['redirect_links']['Row'];
 export type RedirectDestinationRow = Tables['redirect_destinations']['Row'];
+export type QuizRow = Tables['quizzes']['Row'];
+export type QuizResponseRow = Tables['quiz_responses']['Row'];
 export type MetaInsightDailyRow = Tables['meta_insights_daily']['Row'];
 export type MetaAdInsightDailyRow = Tables['meta_ad_insights_daily']['Row'];
 export type MetaEntityRow = Tables['meta_entities']['Row'];

@@ -3,6 +3,7 @@ import { supabase } from '../integrations/supabase/client';
 export type AgencyToolKey =
   | 'disparo.dashboard'
   | 'disparo.redirects'
+  | 'disparo.quizzes'
   | 'disparo.templates'
   | 'disparo.broadcasts'
   | 'disparo.request'
@@ -25,6 +26,7 @@ export const agencyToolGroups: AgencyToolGroup[] = [
     tools: [
       { key: 'disparo.dashboard', label: 'Dashboard de disparos', path: '/agency/disparo/dashboard' },
       { key: 'disparo.redirects', label: 'Redirecionador', path: '/agency/disparo/redirecionador' },
+      { key: 'disparo.quizzes', label: 'Quiz de qualificação', path: '/agency/disparo/quiz' },
       { key: 'disparo.templates', label: 'Templates Infobip', path: '/agency/disparo/templates' },
       { key: 'disparo.broadcasts', label: 'Transmissões', path: '/agency/disparo/transmissoes' },
       { key: 'disparo.request', label: 'Solicitar disparo', path: '/agency/disparo/solicitar' },
