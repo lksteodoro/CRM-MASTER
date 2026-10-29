@@ -1167,17 +1167,17 @@ ${rows.map(r => `<tr>
   });
 
   // ─── Tab 3: Anúncios (lote) ───────────────────────────────────────────────────
-  const todayDDMM = (() => {
+  const todayDDMMAA = (() => {
     const d = new Date();
-    return String(d.getDate()).padStart(2, '0') + String(d.getMonth() + 1).padStart(2, '0');
+    return String(d.getDate()).padStart(2, '0') + String(d.getMonth() + 1).padStart(2, '0') + String(d.getFullYear()).slice(-2);
   })();
 
-  // Padrão: AD01_2703, AD02_2703, etc.
+  // Padrão: AD01_270326, AD02_270326, etc.
   const resolveAdName = (pattern, idx) =>
-    pattern.replace(/{index}/g, String(idx).padStart(2, '0')).replace(/{date}/g, todayDDMM);
+    pattern.replace(/{index}/g, String(idx).padStart(2, '0')).replace(/{date}/g, todayDDMMAA);
 
   const [adsData, setAdsData] = useState({
-    namingPattern: 'AD{index}_{date}', // {date} = DDMM dinamico na hora de publicar
+    namingPattern: 'AD{index}_{date}', // {date} = DDMMAA dinamico na hora de publicar
     primaryText: card.demandaDescricao || '',
     description: '',
     // O título é escrito por quem cria o anúncio. Herdar o nome do projeto
@@ -3867,9 +3867,9 @@ ${rows.map(r => `<tr>
                           )}
                         </div>
                       )}
-                      <Field label="Nomenclatura do Anúncio" value={adsData.namingPattern} onChange={e => setAdsData({ ...adsData, namingPattern: e.target.value })} placeholder="AD{index}_DDMM_{index}" />
+                      <Field label="Nomenclatura do Anúncio" value={adsData.namingPattern} onChange={e => setAdsData({ ...adsData, namingPattern: e.target.value })} placeholder="AD{index}_{date}" />
                       <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '-8px', lineHeight: '1.4' }}>
-                        <strong style={{ color: 'var(--text-main)' }}>{'{index}'}</strong> → 01, 02... &nbsp;|&nbsp; <strong style={{ color: 'var(--text-main)' }}>{'{date}'}</strong> → {todayDDMM}
+                        <strong style={{ color: 'var(--text-main)' }}>{'{index}'}</strong> → 01, 02... &nbsp;|&nbsp; <strong style={{ color: 'var(--text-main)' }}>{'{date}'}</strong> → {todayDDMMAA}
                       </p>
                       {adsData.namingPattern && (
                         <div style={{ background: 'var(--bg-app)', border: '1px solid var(--border-light)', borderRadius: '8px', padding: '10px 12px' }}>
