@@ -1586,6 +1586,11 @@ export type Database = {
           created_by: string | null;
           created_at: string;
           updated_at: string;
+          product_id: string | null;
+          draft_flow: Json | null;
+          theme: Json;
+          published_version_id: string | null;
+          started_count: number;
         };
         Insert: {
           id?: string;
@@ -1603,6 +1608,11 @@ export type Database = {
           created_by?: string | null;
           created_at?: string;
           updated_at?: string;
+          product_id?: string | null;
+          draft_flow?: Json | null;
+          theme?: Json;
+          published_version_id?: string | null;
+          started_count?: number;
         };
         Update: {
           id?: string;
@@ -1620,6 +1630,194 @@ export type Database = {
           created_by?: string | null;
           created_at?: string;
           updated_at?: string;
+          product_id?: string | null;
+          draft_flow?: Json | null;
+          theme?: Json;
+          published_version_id?: string | null;
+          started_count?: number;
+        };
+        Relationships: [];
+      };
+      quiz_products: {
+        Row: {
+          id: string;
+          organization_id: string;
+          name: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          organization_id?: string;
+          name: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          name?: string;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      quiz_versions: {
+        Row: {
+          id: string;
+          quiz_id: string;
+          organization_id: string;
+          version: number;
+          flow: Json;
+          theme: Json;
+          title: string;
+          created_by: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          quiz_id: string;
+          organization_id: string;
+          version: number;
+          flow: Json;
+          theme?: Json;
+          title: string;
+          created_by?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          quiz_id?: string;
+          organization_id?: string;
+          version?: number;
+          flow?: Json;
+          theme?: Json;
+          title?: string;
+          created_by?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      quiz_sessions: {
+        Row: {
+          id: string;
+          quiz_id: string;
+          version_id: string | null;
+          organization_id: string;
+          status: 'started' | 'completed';
+          raw_answers: Json;
+          answers: Json;
+          variables: Json;
+          path: string[];
+          current_node_id: string | null;
+          outcome_node_id: string | null;
+          qualified: boolean | null;
+          score: number;
+          tags: string[];
+          webhooks_fired: string[];
+          contact_name: string | null;
+          contact_phone: string | null;
+          contact_email: string | null;
+          utm: Json;
+          device: 'mobile' | 'desktop' | null;
+          referrer: string | null;
+          started_at: string;
+          updated_at: string;
+          completed_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          quiz_id: string;
+          version_id?: string | null;
+          organization_id: string;
+          status?: 'started' | 'completed';
+          raw_answers?: Json;
+          answers?: Json;
+          variables?: Json;
+          path?: string[];
+          current_node_id?: string | null;
+          outcome_node_id?: string | null;
+          qualified?: boolean | null;
+          score?: number;
+          tags?: string[];
+          webhooks_fired?: string[];
+          contact_name?: string | null;
+          contact_phone?: string | null;
+          contact_email?: string | null;
+          utm?: Json;
+          device?: 'mobile' | 'desktop' | null;
+          referrer?: string | null;
+          started_at?: string;
+          updated_at?: string;
+          completed_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          quiz_id?: string;
+          version_id?: string | null;
+          organization_id?: string;
+          status?: 'started' | 'completed';
+          raw_answers?: Json;
+          answers?: Json;
+          variables?: Json;
+          path?: string[];
+          current_node_id?: string | null;
+          outcome_node_id?: string | null;
+          qualified?: boolean | null;
+          score?: number;
+          tags?: string[];
+          webhooks_fired?: string[];
+          contact_name?: string | null;
+          contact_phone?: string | null;
+          contact_email?: string | null;
+          utm?: Json;
+          device?: 'mobile' | 'desktop' | null;
+          referrer?: string | null;
+          started_at?: string;
+          updated_at?: string;
+          completed_at?: string | null;
+        };
+        Relationships: [];
+      };
+      quiz_webhook_deliveries: {
+        Row: {
+          id: string;
+          quiz_id: string;
+          session_id: string | null;
+          organization_id: string;
+          node_id: string;
+          url: string;
+          ok: boolean;
+          status_code: number | null;
+          attempts: number;
+          error: string | null;
+          response_snippet: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          quiz_id: string;
+          session_id?: string | null;
+          organization_id: string;
+          node_id: string;
+          url: string;
+          ok: boolean;
+          status_code?: number | null;
+          attempts?: number;
+          error?: string | null;
+          response_snippet?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          quiz_id?: string;
+          session_id?: string | null;
+          organization_id?: string;
+          node_id?: string;
+          url?: string;
+          ok?: boolean;
+          status_code?: number | null;
+          attempts?: number;
+          error?: string | null;
+          response_snippet?: string | null;
+          created_at?: string;
         };
         Relationships: [];
       };
@@ -1739,6 +1937,14 @@ export type Database = {
         Args: { p_slug: string };
         Returns: Array<{ target_url: string; delay_seconds: number; link_name: string }>;
       };
+      publish_quiz: {
+        Args: { p_quiz_id: string };
+        Returns: Database['public']['Tables']['quiz_versions']['Row'];
+      };
+      quiz_stats: {
+        Args: Record<string, never>;
+        Returns: Array<{ quiz_id: string; started: number; completed: number; qualified: number; last_at: string | null }>;
+      };
       get_public_quiz: {
         Args: { p_slug: string };
         Returns: Array<{ title: string; description: string | null; questions: Json }>;
@@ -1788,6 +1994,10 @@ export type RedirectLinkRow = Tables['redirect_links']['Row'];
 export type RedirectDestinationRow = Tables['redirect_destinations']['Row'];
 export type QuizRow = Tables['quizzes']['Row'];
 export type QuizResponseRow = Tables['quiz_responses']['Row'];
+export type QuizProductRow = Tables['quiz_products']['Row'];
+export type QuizVersionRow = Tables['quiz_versions']['Row'];
+export type QuizSessionRow = Tables['quiz_sessions']['Row'];
+export type QuizWebhookDeliveryRow = Tables['quiz_webhook_deliveries']['Row'];
 export type MetaInsightDailyRow = Tables['meta_insights_daily']['Row'];
 export type MetaAdInsightDailyRow = Tables['meta_ad_insights_daily']['Row'];
 export type MetaEntityRow = Tables['meta_entities']['Row'];

@@ -18,6 +18,7 @@
     "@ffmpeg/util": "^0.12.2",
     "@mediabunny/aac-encoder": "1.59.1",
     "@supabase/supabase-js": "^2.112.2",
+    "@xyflow/react": "^12.12.0",
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
     "jszip": "^3.10.1",

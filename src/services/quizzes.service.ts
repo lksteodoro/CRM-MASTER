@@ -1,126 +1,76 @@
 import { supabase } from '../integrations/supabase/client';
-import type { Json, QuizResponseRow, QuizRow } from '../integrations/supabase/database.types';
+import type {
+  Json,
+  QuizProductRow,
+  QuizRow,
+  QuizSessionRow,
+  QuizVersionRow,
+  QuizWebhookDeliveryRow,
+} from '../integrations/supabase/database.types';
 import { normalizeRedirectSlug } from './redirectLinks.service';
+import { blankFlow, disparoTemplateFlow, type QuizFlow } from '../../supabase/functions/_shared/quizFlow.ts';
 
-export type QuizQuestionType = 'name' | 'phone' | 'email' | 'text' | 'number' | 'choice';
-
-export interface QuizOption {
-  id: string;
-  label: string;
-  /** false = quem escolhe esta opção é desqualificado. */
-  qualifies: boolean;
-}
-
-export interface QuizQuestion {
-  id: string;
-  type: QuizQuestionType;
-  label: string;
-  placeholder?: string;
-  required: boolean;
-  /** Só em 'number': abaixo deste valor o lead é desqualificado. */
-  min?: number | null;
-  options?: QuizOption[];
-}
-
-/** Pergunta como a página pública recebe: sem mínimo e sem a marcação das opções. */
-export type PublicQuizQuestion = Omit<QuizQuestion, 'min' | 'options'> & { options?: { id: string; label: string }[] };
-
-export interface Quiz extends Omit<QuizRow, 'questions'> {
-  questions: QuizQuestion[];
-}
-
-export interface QuizInput {
-  name: string;
-  slug: string;
-  title: string;
-  description: string | null;
-  questions: QuizQuestion[];
-  qualified_link_id: string | null;
-  disqualified_link_id: string | null;
-  active: boolean;
-}
-
-export interface PublicQuiz {
-  title: string;
-  description: string | null;
-  questions: PublicQuizQuestion[];
-}
-
-export const quizQuestionTypes: { value: QuizQuestionType; label: string }[] = [
-  { value: 'name', label: 'Nome' },
-  { value: 'phone', label: 'WhatsApp / telefone' },
-  { value: 'email', label: 'E-mail' },
-  { value: 'text', label: 'Texto livre' },
-  { value: 'number', label: 'Número (com mínimo)' },
-  { value: 'choice', label: 'Múltipla escolha' },
-];
-
-export function newQuizId() {
-  return crypto.randomUUID().slice(0, 8);
-}
-
-/** Modelo pronto para pré-qualificar o serviço de disparo (mínimo de 1.000 contatos). */
-export function disparoQuizTemplate(): QuizInput {
-  return {
-    name: 'Pré-qualificação de disparo',
-    slug: 'qualificacao-disparo',
-    title: 'Vamos ver se o disparo é para você',
-    description: 'Responda em menos de 1 minuto.',
-    active: true,
-    qualified_link_id: null,
-    disqualified_link_id: null,
-    questions: [
-      { id: newQuizId(), type: 'name', label: 'Qual é o seu nome?', required: true },
-      { id: newQuizId(), type: 'phone', label: 'Qual é o seu WhatsApp?', placeholder: '(11) 99999-9999', required: true },
-      { id: newQuizId(), type: 'text', label: 'Qual é a sua empresa?', required: false },
-      {
-        id: newQuizId(),
-        type: 'choice',
-        label: 'Quantos contatos você quer atingir em um único disparo?',
-        required: true,
-        options: [
-          { id: newQuizId(), label: 'Menos de 1.000', qualifies: false },
-          { id: newQuizId(), label: 'De 1.000 a 5.000', qualifies: true },
-          { id: newQuizId(), label: 'De 5.000 a 20.000', qualifies: true },
-          { id: newQuizId(), label: 'Mais de 20.000', qualifies: true },
-        ],
-      },
-    ],
+export interface QuizTheme {
+  primaryColor?: string;
+  mode?: 'dark' | 'light';
+  font?: 'jakarta' | 'inter' | 'nunito' | 'serif';
+  buttonShape?: 'rounded' | 'pill' | 'square';
+  progress?: 'bar' | 'percent' | 'steps' | 'none';
+  transition?: 'slide' | 'fade' | 'none';
+  logoUrl?: string;
+  welcome?: {
+    enabled?: boolean;
+    badge?: string;
+    title?: string;
+    subtitle?: string;
+    imageUrl?: string;
+    buttonLabel?: string;
+    /** Ex.: "Leva menos de 1 minuto". */
+    note?: string;
   };
 }
 
-function toQuiz(row: QuizRow): Quiz {
-  return { ...row, questions: Array.isArray(row.questions) ? (row.questions as unknown as QuizQuestion[]) : [] };
+export const DEFAULT_THEME: QuizTheme = {
+  primaryColor: '#6284ff',
+  mode: 'dark',
+  font: 'jakarta',
+  buttonShape: 'rounded',
+  progress: 'bar',
+  transition: 'slide',
+  welcome: { enabled: false },
+};
+
+export interface Quiz extends Omit<QuizRow, 'draft_flow' | 'theme'> {
+  draft_flow: QuizFlow | null;
+  theme: QuizTheme;
 }
 
-function normalizedInput(input: QuizInput): QuizInput {
-  const name = input.name.trim();
-  const title = input.title.trim();
-  const slug = normalizeRedirectSlug(input.slug);
-  if (!name) throw new Error('Informe um nome para identificar o quiz.');
-  if (!title) throw new Error('Informe o título que o lead vai ver.');
-  if (!/^[a-z0-9][a-z0-9-]{2,79}$/.test(slug)) throw new Error('O endereço do quiz deve ter entre 3 e 80 caracteres.');
-  if (input.questions.length === 0) throw new Error('Adicione pelo menos uma pergunta.');
-  const questions = input.questions.map((question, index) => {
-    const label = question.label.trim();
-    if (!label) throw new Error(`A pergunta ${index + 1} está sem texto.`);
-    const clean: QuizQuestion = { id: question.id, type: question.type, label, required: question.required };
-    if (question.placeholder?.trim()) clean.placeholder = question.placeholder.trim();
-    if (question.type === 'number' && question.min !== null && question.min !== undefined && !Number.isNaN(question.min)) {
-      clean.min = question.min;
-    }
-    if (question.type === 'choice') {
-      const options = (question.options ?? [])
-        .map((option) => ({ ...option, label: option.label.trim() }))
-        .filter((option) => option.label);
-      if (options.length < 2) throw new Error(`A pergunta ${index + 1} precisa de pelo menos duas opções.`);
-      clean.options = options;
-    }
-    return clean;
-  });
-  if (!input.qualified_link_id) throw new Error('Escolha o link de quem for qualificado.');
-  return { ...input, name, title, slug, description: input.description?.trim() || null, questions };
+export interface QuizStats {
+  started: number;
+  completed: number;
+  qualified: number;
+  last_at: string | null;
 }
+
+export type QuizTemplate = 'disparo' | 'blank';
+
+function toQuiz(row: QuizRow): Quiz {
+  return { ...row, draft_flow: (row.draft_flow as unknown as QuizFlow | null) ?? null, theme: (row.theme as QuizTheme | null) ?? {} };
+}
+
+function cleanSlug(value: string) {
+  const slug = normalizeRedirectSlug(value);
+  if (!/^[a-z0-9][a-z0-9-]{2,79}$/.test(slug)) throw new Error('O endereço do quiz deve ter entre 3 e 80 caracteres.');
+  return slug;
+}
+
+function friendlyError(error: { message?: string; code?: string }) {
+  if (error.code === '23505' || /quizzes_slug_key/.test(error.message ?? '')) return new Error('Já existe um quiz com esse endereço. Escolha outro.');
+  if (/invalid_flow/.test(error.message ?? '')) return new Error('O fluxo precisa de um Início e de pelo menos um bloco final antes de publicar.');
+  return new Error(error.message || 'Não foi possível salvar.');
+}
+
+// ─── quizzes ─────────────────────────────────────────────────────────────────
 
 export async function listQuizzes(): Promise<Quiz[]> {
   const { data, error } = await supabase.from('quizzes').select('*').order('created_at', { ascending: false });
@@ -128,27 +78,84 @@ export async function listQuizzes(): Promise<Quiz[]> {
   return (data ?? []).map(toQuiz);
 }
 
-export async function createQuiz(input: QuizInput): Promise<Quiz> {
-  const clean = normalizedInput(input);
-  const { data, error } = await supabase
-    .from('quizzes')
-    .insert({ ...clean, questions: clean.questions as unknown as Json })
-    .select()
-    .single();
+export async function getQuiz(quizId: string): Promise<Quiz> {
+  const { data, error } = await supabase.from('quizzes').select('*').eq('id', quizId).single();
   if (error) throw error;
   return toQuiz(data);
 }
 
-export async function updateQuiz(quizId: string, input: QuizInput): Promise<Quiz> {
-  const clean = normalizedInput(input);
+export async function listQuizStats(): Promise<Record<string, QuizStats>> {
+  const { data, error } = await supabase.rpc('quiz_stats');
+  if (error) throw error;
+  return Object.fromEntries((data ?? []).map((row) => [row.quiz_id, {
+    started: Number(row.started),
+    completed: Number(row.completed),
+    qualified: Number(row.qualified),
+    last_at: row.last_at,
+  }]));
+}
+
+export async function createQuiz(input: { name: string; slug: string; title: string; product_id: string | null; template: QuizTemplate }): Promise<Quiz> {
+  const name = input.name.trim();
+  if (!name) throw new Error('Informe um nome para o quiz.');
+  const flow = input.template === 'disparo' ? disparoTemplateFlow() : blankFlow();
+  const theme: QuizTheme = {
+    ...DEFAULT_THEME,
+    welcome: input.template === 'disparo'
+      ? { enabled: true, badge: 'Diagnóstico gratuito', title: 'Descubra se o disparo em massa é para a sua empresa', subtitle: 'Responda 4 perguntas rápidas e veja na hora se você se encaixa.', buttonLabel: 'Começar', note: 'Leva menos de 1 minuto' }
+      : { enabled: false },
+  };
   const { data, error } = await supabase
     .from('quizzes')
-    .update({ ...clean, questions: clean.questions as unknown as Json })
+    .insert({ name, slug: cleanSlug(input.slug || name), title: input.title.trim() || name, product_id: input.product_id, draft_flow: flow as unknown as Json, theme: theme as unknown as Json, active: true })
+    .select()
+    .single();
+  if (error) throw friendlyError(error);
+  return toQuiz(data);
+}
+
+export async function duplicateQuiz(quiz: Quiz): Promise<Quiz> {
+  const baseSlug = `${quiz.slug}-copia`.slice(0, 74);
+  const { data: existing } = await supabase.from('quizzes').select('slug').like('slug', `${baseSlug}%`);
+  const taken = new Set((existing ?? []).map((row) => row.slug));
+  let slug = baseSlug;
+  for (let index = 2; taken.has(slug); index += 1) slug = `${baseSlug}-${index}`;
+  const { data, error } = await supabase
+    .from('quizzes')
+    .insert({ name: `${quiz.name} (cópia)`.slice(0, 120), slug, title: quiz.title, description: quiz.description, product_id: quiz.product_id, draft_flow: quiz.draft_flow as unknown as Json, theme: quiz.theme as unknown as Json, active: true })
+    .select()
+    .single();
+  if (error) throw friendlyError(error);
+  return toQuiz(data);
+}
+
+export interface QuizSettingsInput {
+  name: string;
+  slug: string;
+  title: string;
+  product_id: string | null;
+  active: boolean;
+  theme: QuizTheme;
+}
+
+export async function updateQuizSettings(quizId: string, input: QuizSettingsInput): Promise<Quiz> {
+  const name = input.name.trim();
+  const title = input.title.trim();
+  if (!name) throw new Error('Informe um nome para o quiz.');
+  if (!title) throw new Error('Informe o título do quiz.');
+  const { data, error } = await supabase
+    .from('quizzes')
+    .update({ name, title, slug: cleanSlug(input.slug), product_id: input.product_id, active: input.active, theme: input.theme as unknown as Json })
     .eq('id', quizId)
     .select()
     .single();
-  if (error) throw error;
+  if (error) throw friendlyError(error);
   return toQuiz(data);
+}
+
+export async function saveQuizDraft(quizId: string, flow: QuizFlow): Promise<void> {
+  const { error } = await supabase.from('quizzes').update({ draft_flow: flow as unknown as Json }).eq('id', quizId);
+  if (error) throw friendlyError(error);
 }
 
 export async function setQuizActive(quizId: string, active: boolean): Promise<Quiz> {
@@ -162,35 +169,106 @@ export async function deleteQuiz(quizId: string) {
   if (error) throw error;
 }
 
-export async function listQuizResponses(quizId: string): Promise<QuizResponseRow[]> {
-  const { data, error } = await supabase
-    .from('quiz_responses')
-    .select('*')
-    .eq('quiz_id', quizId)
-    .order('created_at', { ascending: false })
-    .limit(1000);
+// ─── versões ─────────────────────────────────────────────────────────────────
+
+export type QuizVersion = Omit<QuizVersionRow, 'flow' | 'theme'> & { flow: QuizFlow; theme: QuizTheme };
+
+export async function listQuizVersions(quizId: string): Promise<QuizVersion[]> {
+  const { data, error } = await supabase.from('quiz_versions').select('*').eq('quiz_id', quizId).order('version', { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((row) => ({ ...row, flow: row.flow as unknown as QuizFlow, theme: (row.theme as QuizTheme | null) ?? {} }));
+}
+
+export async function publishQuiz(quizId: string): Promise<QuizVersionRow> {
+  const { data, error } = await supabase.rpc('publish_quiz', { p_quiz_id: quizId });
+  if (error) throw friendlyError(error);
+  return data;
+}
+
+// ─── produtos ────────────────────────────────────────────────────────────────
+
+export async function listQuizProducts(): Promise<QuizProductRow[]> {
+  const { data, error } = await supabase.from('quiz_products').select('*').order('name');
   if (error) throw error;
   return data ?? [];
 }
 
-export async function getPublicQuiz(slug: string): Promise<PublicQuiz | null> {
-  const { data, error } = await supabase.rpc('get_public_quiz', { p_slug: normalizeRedirectSlug(slug) });
-  if (error) throw error;
-  const row = data?.[0];
-  if (!row) return null;
-  return { ...row, questions: row.questions as unknown as PublicQuizQuestion[] };
+export async function createQuizProduct(name: string): Promise<QuizProductRow> {
+  const clean = name.trim();
+  if (!clean) throw new Error('Informe o nome do produto.');
+  const { data, error } = await supabase.from('quiz_products').insert({ name: clean }).select().single();
+  if (error) throw error.code === '23505' ? new Error('Já existe um produto com esse nome.') : error;
+  return data;
 }
 
-export async function submitQuizResponse(
-  slug: string,
-  answers: Record<string, string>
-): Promise<{ qualified: boolean; redirect_slug: string | null }> {
-  const { data, error } = await supabase.rpc('submit_quiz_response', {
-    p_slug: normalizeRedirectSlug(slug),
-    p_answers: answers,
-  });
+// ─── resultados ──────────────────────────────────────────────────────────────
+
+export async function listQuizSessions(quizId: string): Promise<QuizSessionRow[]> {
+  const { data, error } = await supabase
+    .from('quiz_sessions')
+    .select('*')
+    .eq('quiz_id', quizId)
+    .order('started_at', { ascending: false })
+    .limit(2000);
   if (error) throw error;
-  const row = data?.[0];
-  if (!row) throw new Error('Não foi possível enviar suas respostas.');
-  return row;
+  return data ?? [];
+}
+
+export async function listQuizWebhookDeliveries(quizId: string): Promise<QuizWebhookDeliveryRow[]> {
+  const { data, error } = await supabase
+    .from('quiz_webhook_deliveries')
+    .select('*')
+    .eq('quiz_id', quizId)
+    .order('created_at', { ascending: false })
+    .limit(200);
+  if (error) throw error;
+  return data ?? [];
+}
+
+// ─── execução pública (Edge Function quiz-runtime) ──────────────────────────
+
+const RUNTIME_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/quiz-runtime`;
+
+async function runtime<T>(body: Record<string, unknown>, keepalive = false): Promise<T> {
+  const response = await fetch(RUNTIME_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+    },
+    body: JSON.stringify(body),
+    keepalive,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw Object.assign(new Error(payload.message || payload.error || 'request_failed'), { code: payload.error, status: response.status });
+  return payload as T;
+}
+
+export interface PublishedQuiz {
+  version_id: string;
+  title: string;
+  theme: QuizTheme;
+  flow: QuizFlow;
+}
+
+export type QuizCompletion =
+  | { kind: 'redirect'; href: string }
+  | { kind: 'end'; title: string; text: string; cta?: { label: string; href: string } | null };
+
+export function loadPublishedQuiz(slug: string) {
+  return runtime<PublishedQuiz>({ action: 'load', slug: normalizeRedirectSlug(slug) });
+}
+
+export function startQuizSession(slug: string, versionId: string, context: Record<string, string>) {
+  const device = window.matchMedia('(max-width: 767px)').matches ? 'mobile' : 'desktop';
+  return runtime<{ session_id: string }>({ action: 'start', slug: normalizeRedirectSlug(slug), version_id: versionId, context, device, referrer: document.referrer || null });
+}
+
+export function sendQuizProgress(sessionId: string, answers: Record<string, string | string[]>) {
+  return runtime<{ ok: boolean }>({ action: 'progress', session_id: sessionId, answers }, true);
+}
+
+export function completeQuizSession(sessionId: string, answers: Record<string, string | string[]>) {
+  return runtime<QuizCompletion>({ action: 'complete', session_id: sessionId, answers });
 }
