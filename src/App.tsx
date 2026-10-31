@@ -34,6 +34,7 @@ import { RedirectLinksPage } from './pages/admin/RedirectLinksPage';
 import { QuizzesPage } from './pages/admin/QuizzesPage';
 // O editor traz o React Flow; carregado só quando aberto, fora do pacote da página pública.
 const QuizEditorPage = lazy(() => import('./pages/admin/QuizEditorPage').then((module) => ({ default: module.QuizEditorPage })));
+const QuizAppearancePage = lazy(() => import('./pages/admin/QuizAppearancePage').then((module) => ({ default: module.QuizAppearancePage })));
 import { InfobipTemplatesPage } from './pages/admin/InfobipTemplatesPage';
 import { InfobipBroadcastsPage } from './pages/admin/InfobipBroadcastsPage';
 import { ClientsListPage } from './pages/admin/ClientsListPage';
@@ -79,7 +80,7 @@ function App() {
               </Route>
             </Route>
             <Route element={<AgencyToolRoute tool="disparo.redirects" />}><Route element={<AdminShell />}><Route path="/agency/disparo/redirecionador" element={<RedirectLinksPage />} /></Route></Route>
-            <Route element={<AgencyToolRoute tool="disparo.quizzes" />}><Route element={<AdminShell />}><Route path="/agency/ferramentas/quiz" element={<QuizzesPage />} /><Route path="/agency/ferramentas/quiz/:quizId" element={<Suspense fallback={null}><QuizEditorPage /></Suspense>} /><Route path="/agency/disparo/quiz" element={<Navigate to="/agency/ferramentas/quiz" replace />} /></Route></Route>
+            <Route element={<AgencyToolRoute tool="disparo.quizzes" />}><Route element={<AdminShell />}><Route path="/agency/ferramentas/quiz" element={<QuizzesPage />} /><Route path="/agency/ferramentas/quiz/:quizId" element={<Suspense fallback={null}><QuizEditorPage /></Suspense>} /><Route path="/agency/ferramentas/quiz/:quizId/aparencia" element={<Suspense fallback={null}><QuizAppearancePage /></Suspense>} /><Route path="/agency/disparo/quiz" element={<Navigate to="/agency/ferramentas/quiz" replace />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="disparo.templates" />}><Route element={<AdminShell />}><Route path="/agency/disparo/templates" element={<InfobipTemplatesPage />} /><Route path="/agency/disparo/template" element={<Navigate to="/agency/disparo/templates" replace />} /><Route path="/agency/disparo/tempelte" element={<Navigate to="/agency/disparo/templates" replace />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="disparo.broadcasts" />}><Route element={<AdminShell />}><Route path="/agency/disparo/transmissoes" element={<InfobipBroadcastsPage />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="disparo.request" />}><Route element={<AdminShell />}><Route path="/agency/disparo/solicitar" element={<ClientDisparoPortalPage />} /></Route></Route>

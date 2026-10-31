@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   addEdge,
   Background,
@@ -52,10 +52,12 @@ import {
   listQuizVersions,
   publishQuiz,
   saveQuizDraft,
+  saveQuizTheme,
   type Quiz,
   type QuizVersion,
 } from '../../services/quizzes.service';
 import type { ClientRow, QuizProductRow } from '../../integrations/supabase/database.types';
+import { checkTheme } from '../../lib/quizTheme';
 
 const PALETTE: QuizNodeType[] = ['message', 'input', 'choice', 'condition', 'action', 'webhook', 'redirect', 'end'];
 
@@ -115,7 +117,8 @@ function Editor() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<'saved' | 'pending' | 'saving' | 'error'>('saved');
   const [panel, setPanel] = useState<'none' | 'issues' | 'versions'>('none');
-  const [modal, setModal] = useState<'none' | 'settings' | 'appearance' | 'preview' | 'publish'>('none');
+  const [modal, setModal] = useState<'none' | 'settings' | 'preview' | 'publish'>('none');
+  const navigate = useNavigate();
   const [previewFrame, setPreviewFrame] = useState<'mobile' | 'desktop'>('mobile');
   const [previewKey, setPreviewKey] = useState(0);
   const [publishing, setPublishing] = useState(false);
@@ -146,7 +149,11 @@ function Editor() {
   useEffect(() => { void load(); }, [load]);
 
   const flow = useMemo(() => fromRF(nodes, edges), [nodes, edges]);
-  const issues = useMemo(() => validateFlow(flow), [flow]);
+  // Fluxo + aparência: contraste ilegível ou imagem de fundo faltando também impedem publicar.
+  const issues = useMemo(() => [
+    ...validateFlow(flow),
+    ...checkTheme(quiz?.theme).map((issue) => ({ level: issue.level, nodeId: null, message: `Aparência: ${issue.message}` })),
+  ], [flow, quiz?.theme]);
   const issuesByNode = useMemo(() => {
     const map = new Map<string, typeof issues>();
     for (const issue of issues) if (issue.nodeId) map.set(issue.nodeId, [...(map.get(issue.nodeId) ?? []), issue]);
@@ -268,9 +275,24 @@ function Editor() {
     }
   }
 
+  // Salva o rascunho do fluxo antes de sair para a aparência (a prévia de lá lê o fluxo salvo).
+  async function openAppearance() {
+    if (!quiz) return;
+    try {
+      await saveQuizDraft(quiz.id, flow);
+      lastSavedRef.current = JSON.stringify(flow);
+      setSaveState('saved');
+      navigate(`/agency/ferramentas/quiz/${quiz.id}/aparencia`);
+    } catch {
+      setNotice({ tone: 'bad', text: 'Não foi possível salvar o fluxo antes de abrir a aparência.' });
+    }
+  }
+
   function restoreVersion(version: QuizVersion) {
     if (!window.confirm(`Trazer a versão ${version.version} para o rascunho? O rascunho atual será substituído (a versão publicada não muda até você publicar).`)) return;
     const rf = toRF(version.flow);
+    // Fluxo e aparência voltam juntos, como foram publicados.
+    if (quiz) void saveQuizTheme(quiz.id, version.theme).then(() => setQuiz({ ...quiz, theme: version.theme })).catch(() => setNotice({ tone: 'bad', text: 'Não foi possível restaurar a aparência.' }));
     setNodes(rf.nodes);
     setEdges(rf.edges);
     setSelectedId(null);
@@ -310,11 +332,11 @@ function Editor() {
             <button type="button" onClick={() => setPanel(panel === 'issues' ? 'none' : 'issues')} className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs ${errors.length ? 'border-[var(--color-bad)] text-[var(--color-bad)]' : 'border-[var(--color-border)] text-[var(--color-text-muted)]'}`}>
               {errors.length ? <AlertTriangle size={13} /> : <CheckCircle2 size={13} className="text-[var(--color-good)]" />} {errors.length ? `${errors.length} erro${errors.length > 1 ? 's' : ''}` : 'Fluxo válido'}
             </button>
-            <button type="button" onClick={() => setModal('appearance')} className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text)] hover:bg-[var(--color-panel-2)]"><Palette size={13} /> Aparência</button>
+            <button type="button" onClick={() => void openAppearance()} className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text)] hover:bg-[var(--color-panel-2)]"><Palette size={13} /> Aparência</button>
             <button type="button" onClick={() => setModal('settings')} className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text)] hover:bg-[var(--color-panel-2)]"><Settings2 size={13} /> Configurações</button>
             <button type="button" onClick={() => setPanel(panel === 'versions' ? 'none' : 'versions')} className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text)] hover:bg-[var(--color-panel-2)]"><History size={13} /> Versões</button>
             <button type="button" onClick={() => { setPreviewKey((key) => key + 1); setModal('preview'); }} className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text)] hover:bg-[var(--color-panel-2)]"><Play size={13} /> Testar</button>
-            <button type="button" onClick={() => { if (errors.length) { setPanel('issues'); setNotice({ tone: 'bad', text: 'Corrija os erros do fluxo antes de publicar.' }); } else setModal('publish'); }} className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--color-brand)] px-3 py-1.5 text-xs font-medium text-white hover:brightness-110"><Rocket size={13} /> Publicar</button>
+            <button type="button" onClick={() => { if (errors.length) { setPanel('issues'); setNotice({ tone: 'bad', text: 'Corrija os erros (fluxo ou aparência) antes de publicar.' }); } else setModal('publish'); }} className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--color-brand)] px-3 py-1.5 text-xs font-medium text-white hover:brightness-110"><Rocket size={13} /> Publicar</button>
           </div>
         </header>
 
@@ -356,7 +378,7 @@ function Editor() {
             >
               <Background gap={22} size={1.2} color="var(--color-border)" />
               <Controls showInteractive={false} />
-              <MiniMap pannable zoomable nodeColor={(node) => NODE_META[(node.type as QuizNodeType) ?? 'message'].color} maskColor="rgba(0,0,0,.55)" className="!hidden lg:!block" />
+              <MiniMap pannable zoomable nodeColor={(node) => NODE_META[(node.type as QuizNodeType) ?? 'message'].color} maskColor="rgba(0,0,0,.55)" style={{ width: 150, height: 100 }} className="!hidden xl:!block" />
             </ReactFlow>
             {/* Paleta compacta no celular */}
             <div className="absolute inset-x-2 top-2 flex gap-1 overflow-x-auto md:hidden">
@@ -420,11 +442,10 @@ function Editor() {
         </div>
       </main>
 
-      {(modal === 'settings' || modal === 'appearance') && (
+      {modal === 'settings' && (
         <QuizSettingsModal
           quiz={quiz}
           products={products}
-          initialTab={modal === 'appearance' ? 'appearance' : 'general'}
           onClose={() => setModal('none')}
           onSaved={(saved) => { setQuiz(saved); setModal('none'); setNotice({ tone: 'good', text: 'Configurações salvas.' }); }}
           onProductCreated={(product) => setProducts((current) => [...current, product].sort((a, b) => a.name.localeCompare(b.name)))}

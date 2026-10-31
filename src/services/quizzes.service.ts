@@ -9,36 +9,9 @@ import type {
 } from '../integrations/supabase/database.types';
 import { normalizeRedirectSlug } from './redirectLinks.service';
 import { blankFlow, disparoTemplateFlow, type QuizFlow } from '../../supabase/functions/_shared/quizFlow.ts';
+import { DEFAULT_THEME, type QuizTheme } from '../lib/quizTheme';
 
-export interface QuizTheme {
-  primaryColor?: string;
-  mode?: 'dark' | 'light';
-  font?: 'jakarta' | 'inter' | 'nunito' | 'serif';
-  buttonShape?: 'rounded' | 'pill' | 'square';
-  progress?: 'bar' | 'percent' | 'steps' | 'none';
-  transition?: 'slide' | 'fade' | 'none';
-  logoUrl?: string;
-  welcome?: {
-    enabled?: boolean;
-    badge?: string;
-    title?: string;
-    subtitle?: string;
-    imageUrl?: string;
-    buttonLabel?: string;
-    /** Ex.: "Leva menos de 1 minuto". */
-    note?: string;
-  };
-}
-
-export const DEFAULT_THEME: QuizTheme = {
-  primaryColor: '#6284ff',
-  mode: 'dark',
-  font: 'jakarta',
-  buttonShape: 'rounded',
-  progress: 'bar',
-  transition: 'slide',
-  welcome: { enabled: false },
-};
+export { DEFAULT_THEME, type QuizTheme } from '../lib/quizTheme';
 
 export interface Quiz extends Omit<QuizRow, 'draft_flow' | 'theme'> {
   draft_flow: QuizFlow | null;
@@ -151,6 +124,11 @@ export async function updateQuizSettings(quizId: string, input: QuizSettingsInpu
     .single();
   if (error) throw friendlyError(error);
   return toQuiz(data);
+}
+
+export async function saveQuizTheme(quizId: string, theme: QuizTheme): Promise<void> {
+  const { error } = await supabase.from('quizzes').update({ theme: theme as unknown as Json }).eq('id', quizId);
+  if (error) throw friendlyError(error);
 }
 
 export async function saveQuizDraft(quizId: string, flow: QuizFlow): Promise<void> {
@@ -271,4 +249,40 @@ export function sendQuizProgress(sessionId: string, answers: Record<string, stri
 
 export function completeQuizSession(sessionId: string, answers: Record<string, string | string[]>) {
   return runtime<QuizCompletion>({ action: 'complete', session_id: sessionId, answers });
+}
+
+// ─── imagens do quiz (bucket público quiz-media) ────────────────────────────
+
+const MEDIA_BUCKET = 'quiz-media';
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+/** Reduz para no máximo maxSide px e converte para WebP antes de enviar. GIF segue como está. */
+async function optimizeImage(file: File, maxSide: number): Promise<Blob> {
+  if (file.type === 'image/gif') return file;
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  canvas.getContext('2d')!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/webp', 0.82));
+  return blob ?? file;
+}
+
+export async function uploadQuizImage(organizationId: string, file: File, maxSide = 2000): Promise<string> {
+  if (!/^image\/(jpeg|png|webp|gif|avif)$/.test(file.type)) throw new Error('Envie uma imagem JPG, PNG, WebP, AVIF ou GIF.');
+  if (file.size > MAX_UPLOAD_BYTES) throw new Error('A imagem passa de 10 MB.');
+  const blob = await optimizeImage(file, maxSide);
+  const extension = blob.type === 'image/webp' ? 'webp' : (file.name.split('.').pop() ?? 'img').toLowerCase();
+  const path = `${organizationId}/${crypto.randomUUID()}.${extension}`;
+  const { error } = await supabase.storage.from(MEDIA_BUCKET).upload(path, blob, { contentType: blob.type || file.type, cacheControl: '31536000', upsert: false });
+  if (error) throw new Error(/mime|type/i.test(error.message) ? 'Formato de imagem não aceito.' : /size|large/i.test(error.message) ? 'Imagem grande demais.' : error.message);
+  return supabase.storage.from(MEDIA_BUCKET).getPublicUrl(path).data.publicUrl;
+}
+
+export async function listQuizImages(organizationId: string): Promise<{ url: string; name: string; created_at: string }[]> {
+  const { data, error } = await supabase.storage.from(MEDIA_BUCKET).list(organizationId, { limit: 100, sortBy: { column: 'created_at', order: 'desc' } });
+  if (error) throw error;
+  return (data ?? []).filter((item) => item.id).map((item) => ({ url: supabase.storage.from(MEDIA_BUCKET).getPublicUrl(`${organizationId}/${item.name}`).data.publicUrl, name: item.name, created_at: item.created_at ?? '' }));
 }

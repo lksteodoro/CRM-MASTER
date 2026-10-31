@@ -217,10 +217,14 @@ export function scopeOf(state: RunState): Record<string, QuizValue> {
   };
 }
 
-/** Troca {{variavel}} pelo valor. Variável sem valor vira texto vazio. */
+/**
+ * Troca {{variavel}} pelo valor. Aceita reserva para quando a variável estiver
+ * vazia: {{nome|tudo bem}} vira "tudo bem" se o lead não informou o nome.
+ * Sem reserva, a variável vazia vira texto vazio.
+ */
 export function interpolate(text: string | undefined, scope: Record<string, QuizValue>) {
   if (!text) return '';
-  return text.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, name: string) => formatValue(scope[name] ?? null));
+  return text.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*(?:\|([^}]*))?\}\}/g, (_, name: string, fallback?: string) => formatValue(scope[name] ?? null) || (fallback ?? '').trim());
 }
 
 export function emptyState(context: Record<string, string> = {}): RunState {

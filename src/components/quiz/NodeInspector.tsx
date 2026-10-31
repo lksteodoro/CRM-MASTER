@@ -173,7 +173,7 @@ export function NodeInspector({ node, variables, links, onChange, onDelete, onDu
                 {(data.options ?? []).map((option, index, all) => (
                   <div key={option.id} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-2">
                     <div className="flex items-center gap-1.5">
-                      <input value={option.emoji ?? ''} onChange={(event) => setOptions(all.map((item) => item.id === option.id ? { ...item, emoji: [...event.target.value].slice(-2).join('') } : item))} className={`${inputClass} w-11 px-1 text-center`} placeholder="😀" aria-label="Ícone" />
+                      <input value={option.emoji ?? ''} onChange={(event) => setOptions(all.map((item) => item.id === option.id ? { ...item, emoji: [...event.target.value].slice(-2).join('') } : item))} className={`${inputClass.replace('w-full', 'w-11 shrink-0')} px-1 text-center`} placeholder="–" title="Ícone opcional (emoji)" aria-label="Ícone opcional" />
                       <input value={option.label} onChange={(event) => setOptions(all.map((item) => item.id === option.id ? { ...item, label: event.target.value, value: item.value && item.value !== toVariableName(item.label) ? item.value : toVariableName(event.target.value) } : item))} className={inputClass} placeholder={`Opção ${index + 1}`} />
                       <div className="flex flex-col">
                         <button type="button" disabled={index === 0} onClick={() => { const next = [...all]; [next[index - 1], next[index]] = [next[index], next[index - 1]]; setOptions(next); }} className="p-0.5 text-[var(--color-text-faint)] disabled:opacity-30" aria-label="Subir"><ArrowUp size={12} /></button>
