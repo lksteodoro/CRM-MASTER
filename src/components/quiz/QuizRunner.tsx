@@ -431,7 +431,7 @@ export function QuizRunner(props: QuizRunnerProps) {
 
   const shell = (content: ReactNode, opts: { showProgress?: boolean; showBack?: boolean } = {}) => {
     const body = (
-      <div className="flex min-h-full w-full flex-col">
+      <div className="flex w-full flex-1 flex-col">
         <header className="quiz-content flex items-center gap-4 px-5 pt-5">
           {theme.logoUrl ? <img src={theme.logoUrl} alt={title} className="h-8 max-w-[140px] object-contain" /> : <span className="text-sm font-semibold text-[var(--q-muted)]">{title}</span>}
           {opts.showProgress && theme.progress !== 'none' && (
