@@ -67,7 +67,6 @@ const adminNav: AdminNavItem[] = [
       { to: '/agency/disparo/transmissoes', label: 'Transmissões', tool: 'disparo.broadcasts', group: 'Envio' },
       { to: '/agency/disparo/templates', label: 'Templates Infobip', tool: 'disparo.templates', group: 'Envio' },
       { to: '/agency/disparo/redirecionador', label: 'Redirecionador', tool: 'disparo.redirects', group: 'Envio' },
-      { to: '/agency/disparo/quiz', label: 'Quiz de qualificação', tool: 'disparo.quizzes', group: 'Envio' },
       { to: '/agency/disparo/higienizador', label: 'Higienizador de lista', tool: 'disparo.sanitizer', group: 'Listas e relatórios' },
       { to: '/agency/disparo/relatorio', label: 'Relatório do fornecedor', tool: 'disparo.report', group: 'Listas e relatórios' },
     ],
@@ -82,6 +81,7 @@ const adminNav: AdminNavItem[] = [
       { to: '/agency/ferramentas/consumer-success', label: 'Consumer Success', tool: 'consumer_success' },
       { to: '/agency/ferramentas/url-de-teste', label: 'Criador de URL de teste', tool: 'utm_tester' },
       { to: '/agency/ferramentas/conversor-de-video', label: 'Conversor de vídeo', tool: 'video_converter' },
+      { to: '/agency/ferramentas/quiz', label: 'Quiz de qualificação', tool: 'disparo.quizzes' },
     ],
   },
   {

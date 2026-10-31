@@ -76,7 +76,7 @@ function App() {
               </Route>
             </Route>
             <Route element={<AgencyToolRoute tool="disparo.redirects" />}><Route element={<AdminShell />}><Route path="/agency/disparo/redirecionador" element={<RedirectLinksPage />} /></Route></Route>
-            <Route element={<AgencyToolRoute tool="disparo.quizzes" />}><Route element={<AdminShell />}><Route path="/agency/disparo/quiz" element={<QuizzesPage />} /></Route></Route>
+            <Route element={<AgencyToolRoute tool="disparo.quizzes" />}><Route element={<AdminShell />}><Route path="/agency/ferramentas/quiz" element={<QuizzesPage />} /><Route path="/agency/disparo/quiz" element={<Navigate to="/agency/ferramentas/quiz" replace />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="disparo.templates" />}><Route element={<AdminShell />}><Route path="/agency/disparo/templates" element={<InfobipTemplatesPage />} /><Route path="/agency/disparo/template" element={<Navigate to="/agency/disparo/templates" replace />} /><Route path="/agency/disparo/tempelte" element={<Navigate to="/agency/disparo/templates" replace />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="disparo.broadcasts" />}><Route element={<AdminShell />}><Route path="/agency/disparo/transmissoes" element={<InfobipBroadcastsPage />} /></Route></Route>
             <Route element={<AgencyToolRoute tool="disparo.request" />}><Route element={<AdminShell />}><Route path="/agency/disparo/solicitar" element={<ClientDisparoPortalPage />} /></Route></Route>

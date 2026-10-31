@@ -54,7 +54,7 @@ const toolMeta: Record<AgencyToolKey, { icon: ComponentType<{ size?: number }>; 
 const disparoBlocks: { label: string; keys: AgencyToolKey[] }[] = [
   { label: 'Visão geral', keys: ['disparo.dashboard'] },
   { label: 'Pedidos', keys: ['disparo.request', 'disparo.demands'] },
-  { label: 'Envio', keys: ['disparo.broadcasts', 'disparo.templates', 'disparo.redirects', 'disparo.quizzes'] },
+  { label: 'Envio', keys: ['disparo.broadcasts', 'disparo.templates', 'disparo.redirects'] },
   { label: 'Listas e relatórios', keys: ['disparo.sanitizer', 'disparo.report'] },
 ];
 

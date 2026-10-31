@@ -26,7 +26,6 @@ export const agencyToolGroups: AgencyToolGroup[] = [
     tools: [
       { key: 'disparo.dashboard', label: 'Dashboard de disparos', path: '/agency/disparo/dashboard' },
       { key: 'disparo.redirects', label: 'Redirecionador', path: '/agency/disparo/redirecionador' },
-      { key: 'disparo.quizzes', label: 'Quiz de qualificação', path: '/agency/disparo/quiz' },
       { key: 'disparo.templates', label: 'Templates Infobip', path: '/agency/disparo/templates' },
       { key: 'disparo.broadcasts', label: 'Transmissões', path: '/agency/disparo/transmissoes' },
       { key: 'disparo.request', label: 'Solicitar disparo', path: '/agency/disparo/solicitar' },
@@ -47,6 +46,7 @@ export const agencyToolGroups: AgencyToolGroup[] = [
       },
       { key: 'utm_tester', label: 'Criador de URL de teste', path: '/agency/ferramentas/url-de-teste' },
       { key: 'video_converter', label: 'Conversor de vídeo', path: '/agency/ferramentas/conversor-de-video' },
+      { key: 'disparo.quizzes', label: 'Quiz de qualificação', path: '/agency/ferramentas/quiz' },
       { key: 'optimization_ia', label: 'Otimização IA', path: '/agency/otimizacao-ia' },
     ],
   },
