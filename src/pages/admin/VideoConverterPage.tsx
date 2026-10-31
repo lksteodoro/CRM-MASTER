@@ -78,7 +78,7 @@ function downloadBlob(blob: Blob, name: string) {
 
 export function VideoConverterPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [presetKey, setPresetKey] = useState<VideoPresetKey>('meta');
+  const [presetKey, setPresetKey] = useState<VideoPresetKey>('light');
   const canPickFolder = useMemo(() => folderPickerAvailable(), []);
   const fastEngine = useMemo(() => webCodecsAvailable(), []);
   const [mode, setMode] = useState<DestinationMode>(canPickFolder ? 'folder' : 'download');

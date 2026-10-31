@@ -22,7 +22,7 @@ export type VideoPreset = {
 
 export const VIDEO_PRESETS: Record<VideoPresetKey, VideoPreset> = {
   meta: {
-    label: 'Meta Ads (recomendado)',
+    label: 'Meta Ads',
     hint: 'Até 1080p, 30 fps, cerca de 6 Mbps. Já fica acima da qualidade que a Meta entrega no feed.',
     maxLong: 1920,
     maxShort: 1080,
